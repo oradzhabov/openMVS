@@ -1933,7 +1933,7 @@ void Scene::PointCloudFilter(int thRemove)
 	}
 
 	// run all camera-point visibility intersections
-	Util::Progress progress(_T("Point visibility checks"), pointcloud.GetSize());
+	Util::Progress progress(_T("Point visibility checks"), pointcloud.GetSize(), 3000.0F);
 	#ifdef DENSE_USE_OPENMP
 	#pragma omp parallel for //schedule(dynamic)
 	for (int64_t i=0; i<(int64_t)pointcloud.GetSize(); ++i) {
