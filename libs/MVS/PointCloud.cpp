@@ -112,6 +112,7 @@ namespace BasicPLY {
 		Point p;
 		Color c;
 		Normal n;
+		uint8_t views;
 	};
 	static const PLY::PlyProperty vert_props[] = {
 		{"x",     PLY::Float32, PLY::Float32, offsetof(PointColNormal,p.x), 0, 0, 0, 0},
@@ -122,7 +123,8 @@ namespace BasicPLY {
 		{"blue",  PLY::Uint8,   PLY::Uint8,   offsetof(PointColNormal,c.b), 0, 0, 0, 0},
 		{"nx",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.x), 0, 0, 0, 0},
 		{"ny",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.y), 0, 0, 0, 0},
-		{"nz",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.z), 0, 0, 0, 0}
+		{"nz",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.z), 0, 0, 0, 0},
+		{"views", PLY::Uint8, PLY::Uint8, offsetof(PointColNormal,views), 0, 0, 0, 0}
 	};
 	// list of the kinds of elements in the PLY
 	static const char* elem_names[] = {
@@ -219,7 +221,7 @@ bool PointCloud::Save(const String& fileName, bool bLegacyTypes) const
 		}
 	} else {
 		// describe what properties go into the vertex elements
-		ply.describe_property(BasicPLY::elem_names[0], 9, BasicPLY::vert_props);
+		ply.describe_property(BasicPLY::elem_names[0], 10, BasicPLY::vert_props);
 
 		// write the header
 		ply.element_count(BasicPLY::elem_names[0], (int)points.GetSize());
@@ -233,6 +235,7 @@ bool PointCloud::Save(const String& fileName, bool bLegacyTypes) const
 			vertex.p = points[i];
 			vertex.n = normals[i];
 			vertex.c = (!colors.IsEmpty() ? colors[i] : Color::WHITE);
+			vertex.views = pointViews[i].GetSize();
 			ply.put_element(&vertex);
 		}
 	}
