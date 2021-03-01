@@ -545,9 +545,20 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 	cv::integral(image.image, imageSum0, CV_64F);
 	#endif
 	if (prevDepthMapSize != size) {
-		prevDepthMapSize = size;
 		BitMatrix mask;
+		if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*depthData.GetView().pImageData, depthData.depthMap.size(), mask, (uint16_t)OPTDENSE::nIgnoreMaskLabel))
+			depthData.ApplyIgnoreMask(mask);
 		DepthEstimator::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
+		#if 0
+		// show pixels to be processed
+		Image8U cmask(size);
+		cmask.memset(0);
+		for (const DepthEstimator::MapRef& x: coords)
+			cmask(x.y, x.x) = 255;
+		cmask.Show("cmask");
+		#endif
+		if (mask.empty())
+			prevDepthMapSize = size;
 	}
 
 	// init threads
@@ -1142,10 +1153,8 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 		!SaveConfidenceMap(ComposeDepthFilePath(imageRef.GetID(), "filtered.cmap"), newConfMap))
 		return false;
 
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	DEBUG("Depth map %3u filtered using %u other images: %u/%u depths discarded (%s)", imageRef.GetID(), N, nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
-	#endif
-
+	DEBUG("Depth map %3u filtered using %u other images: %u/%u depths discarded (%s)",
+		imageRef.GetID(), N, nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
 	return true;
 } // FilterDepthMap
 /*----------------------------------------------------------------*/
@@ -1452,6 +1461,13 @@ bool Scene::DenseReconstruction(int nFusionMode)
 	#endif
 
 	if (!pointcloud.IsEmpty()) {
+		if (obb.IsValid()) {
+			TD_TIMER_START();
+			const size_t numPoints = pointcloud.GetSize();
+			pointcloud.RemovePointsOutside(obb);
+			VERBOSE("Point-cloud trimmed to ROI: %u points removed (%s)",
+				numPoints-pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
+		}
 		if (pointcloud.colors.IsEmpty() && OPTDENSE::nEstimateColors == 1)
 			EstimatePointColors(images, pointcloud);
 		if (pointcloud.normals.IsEmpty() && OPTDENSE::nEstimateNormals == 1)
@@ -1865,7 +1881,7 @@ void Scene::PointCloudFilter(int thRemove)
 {
 	TD_TIMER_STARTD();
 
-	typedef TOctree<PointCloud::PointArr,PointCloud::Point::Type,3,uint32_t,128> Octree;
+	typedef TOctree<PointCloud::PointArr,PointCloud::Point::Type,3,uint32_t> Octree;
 	struct Collector {
 		typedef Octree::IDX_TYPE IDX;
 		typedef PointCloud::Point::Type Real;
@@ -1922,7 +1938,9 @@ void Scene::PointCloudFilter(int thRemove)
 	typedef CLISTDEF2(Collector) Collectors;
 
 	// create octree to speed-up search
-	Octree octree(pointcloud.points);
+	Octree octree(pointcloud.points, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
+		return size > 128;
+	});
 	IntArr visibility(pointcloud.GetSize()); visibility.Memset(0);
 	Collectors collectors; collectors.reserve(images.size());
 	FOREACH(idxView, images) {

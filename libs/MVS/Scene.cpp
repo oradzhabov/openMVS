@@ -83,11 +83,7 @@ bool Scene::LoadInterface(const String & fileName)
 			if (!itCamera.IsNormalized()) {
 				// normalize K
 				ASSERT(itCamera.HasResolution());
-				const REAL scale(REAL(1)/camera.GetNormalizationScale(itCamera.width,itCamera.height));
-				camera.K(0,0) *= scale;
-				camera.K(1,1) *= scale;
-				camera.K(0,2) *= scale;
-				camera.K(1,2) *= scale;
+				camera.K = camera.GetScaledK(REAL(1)/Camera::GetNormalizationScale(itCamera.width, itCamera.height));
 			}
 			DEBUG_EXTRA("Camera model loaded: platform %u; camera %2u; f %.3fx%.3f; poses %u", platforms.size()-1, platform.cameras.size()-1, camera.K(0,0), camera.K(1,1), itPlatform.poses.size());
 		}
@@ -115,6 +111,11 @@ bool Scene::LoadInterface(const String & fileName)
 		imageData.name = image.name;
 		Util::ensureUnifySlash(imageData.name);
 		imageData.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageData.name);
+		if (!image.maskName.empty()) {
+			imageData.maskName = image.maskName;
+			Util::ensureUnifySlash(imageData.maskName);
+			imageData.maskName = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageData.maskName);
+		}
 		imageData.poseID = image.poseID;
 		if (imageData.poseID == NO_ID) {
 			DEBUG_EXTRA("warning: uncalibrated image '%s'", image.name.c_str());
@@ -183,6 +184,9 @@ bool Scene::LoadInterface(const String & fileName)
 		}
 	}
 
+	// import region of interest
+	obb.Set(Matrix3x3f(obj.obb.rot), Point3f(obj.obb.ptMin), Point3f(obj.obb.ptMax));
+
 	DEBUG_EXTRA("Scene loaded from interface format (%s):\n"
 				"\t%u images (%u calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
 				"\t%u points, %u vertices, %u faces",
@@ -225,6 +229,8 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 		const Image& imageData = images[i];
 		MVS::Interface::Image& image = obj.images[i];
 		image.name = MAKE_PATH_REL(WORKING_FOLDER_FULL, imageData.name);
+		if (!imageData.maskName.empty())
+			image.maskName = MAKE_PATH_REL(WORKING_FOLDER_FULL, imageData.maskName);
 		image.poseID = imageData.poseID;
 		image.platformID = imageData.platformID;
 		image.cameraID = imageData.cameraID;
@@ -263,6 +269,11 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 		}
 	}
 
+	// export region of interest
+	obj.obb.rot = Matrix3x3f(obb.m_rot);
+	obj.obb.ptMin = Point3f((obb.m_pos-obb.m_ext).eval());
+	obj.obb.ptMax = Point3f((obb.m_pos+obb.m_ext).eval());
+
 	// serialize out the current state
 	if (!ARCHIVE::SerializeSave(obj, fileName, version>=0?uint32_t(version):MVSI_PROJECT_VER))
 		return false;
@@ -298,7 +309,7 @@ bool Scene::LoadDMAP(const String& fileName)
 	// create image
 	Platform& platform = platforms.AddEmpty();
 	platform.name = _T("platform0");
-	platform.cameras.emplace_back(CameraIntern::ScaleK(camera.K, REAL(1)/CameraIntern::GetNormalizationScale((uint32_t)imageSize.width,(uint32_t)imageSize.height)), RMatrix::IDENTITY, CMatrix::ZERO);
+	platform.cameras.emplace_back(camera.GetScaledK(REAL(1)/CameraIntern::GetNormalizationScale((uint32_t)imageSize.width,(uint32_t)imageSize.height)), RMatrix::IDENTITY, CMatrix::ZERO);
 	platform.poses.emplace_back(Platform::Pose{camera.R, camera.C});
 	Image& image = images.AddEmpty();
 	image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageFileName);
@@ -315,12 +326,14 @@ bool Scene::LoadDMAP(const String& fileName)
 
 	// load image pixels
 	const Image8U3 imageDepth(DepthMap2Image(depthMap));
+	Image8U3 imageColor;
 	if (image.ReloadImage(MAXF(image.width,image.height)))
-		cv::resize(image.image, image.image, depthMap.size());
+		cv::resize(image.image, imageColor, depthMap.size());
 	else
-		image.image = imageDepth;
+		imageColor = imageDepth;
 
 	// create point-cloud
+	camera.K = camera.GetScaledK(imageSize, depthMap.size());
 	pointcloud.points.reserve(depthMap.area());
 	pointcloud.pointViews.reserve(depthMap.area());
 	pointcloud.colors.reserve(depthMap.area());
@@ -335,7 +348,7 @@ bool Scene::LoadDMAP(const String& fileName)
 				continue;
 			pointcloud.points.emplace_back(camera.TransformPointI2W(Point3(c,r,depth)));
 			pointcloud.pointViews.emplace_back(PointCloud::ViewArr{0});
-			pointcloud.colors.emplace_back(image.image(r,c));
+			pointcloud.colors.emplace_back(imageColor(r,c));
 			if (!normalMap.empty())
 				pointcloud.normals.emplace_back(Cast<PointCloud::Normal::Type>(camera.R.t()*Cast<REAL>(normalMap(r,c))));
 			if (!confMap.empty())
@@ -345,6 +358,7 @@ bool Scene::LoadDMAP(const String& fileName)
 
 	// replace color-image with depth-image
 	image.image = imageDepth;
+	cv::resize(image.image, image.image, imageSize);
 
 	DEBUG_EXTRA("Scene loaded from depth-map format - %dx%d size, %.2f%% coverage (%s):\n"
 		"\t1 images (1 calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
@@ -719,4 +733,247 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 
 	return true;
 } // ExportCamerasMLP
+/*----------------------------------------------------------------*/
+
+
+// split the scene in sub-scenes such that each sub-scene surface does not exceed the given
+// maximum sampling area; the area is composed of overlapping samples from different cameras
+// taking into account the footprint of each sample (pixels/unit-length, GSD inverse),
+// including overlapping samples;
+// the indirect goals this method tries to achieve are:
+//  - limit the maximum number of images in each sub-scene such that the depth-map fusion
+//    can load all sub-scene's depth-maps into memory at once
+//  - limit in the same time maximum accumulated images resolution (total number of pixels)
+//    per sub-scene in order to allow all images to be loaded and processed during mesh refinement
+unsigned Scene::Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep) const
+{
+	TD_TIMER_STARTD();
+	// gather samples from all depth-maps
+	const float areaScale(0.01f);
+	typedef cList<Point3f::EVec,const Point3f::EVec&,0,4096,uint32_t> Samples;
+	typedef TOctree<Samples,float,3> Octree;
+	Octree octree;
+	FloatArr areas(0, images.size()*4192);
+	IIndexArr visibility(0, areas.capacity());
+	Unsigned32Arr imageAreas(images.size()); {
+		Samples samples(0, areas.capacity());
+		FOREACH(idxImage, images) {
+			const Image& imageData = images[idxImage];
+			if (!imageData.IsValid())
+				continue;
+			DepthData depthData;
+			depthData.Load(ComposeDepthFilePath(imageData.ID, "dmap"));
+			if (depthData.IsEmpty())
+				continue;
+			const size_t numPointsBegin(visibility.size());
+			const Camera camera(imageData.GetCamera(platforms, depthData.depthMap.size()));
+			for (int r=(depthData.depthMap.rows%depthMapStep)/2; r<depthData.depthMap.rows; r+=depthMapStep) {
+				for (int c=(depthData.depthMap.cols%depthMapStep)/2; c<depthData.depthMap.cols; c+=depthMapStep) {
+					const Depth depth = depthData.depthMap(r,c);
+					if (depth <= 0)
+						continue;
+					const Point3f& X = samples.emplace_back(Cast<float>(camera.TransformPointI2W(Point3(c,r,depth))));
+					areas.emplace_back(Footprint(camera, X)*areaScale);
+					visibility.emplace_back(idxImage);
+				}
+			}
+			imageAreas[idxImage] = visibility.size()-numPointsBegin;
+		}
+		#if 0
+		const AABB3f aabb(samples.data(), samples.size());
+		#else
+		// try to find a dominant plane, and set the bounding-box center on the plane bottom
+		OBB3f obb(samples.data(), samples.size());
+		obb.m_ext(0) *= 2;
+		#if 1
+		// dump box for visualization
+		OBB3f::POINT pts[8];
+		obb.GetCorners(pts);
+		PointCloud pc;
+		for (int i=0; i<8; ++i)
+			pc.points.emplace_back(pts[i]);
+		pc.Save(MAKE_PATH("scene_obb.ply"));
+		#endif
+		const AABB3f aabb(obb.GetAABB());
+		#endif
+		octree.Insert(samples, aabb, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
+			return size > 128;
+		});
+		#if 0 && !defined(_RELEASE)
+		Octree::DEBUGINFO_TYPE info;
+		octree.GetDebugInfo(&info);
+		Octree::LogDebugInfo(info);
+		#endif
+		octree.ResetItems();
+	}
+	struct AreaInserter {
+		const FloatArr& areas;
+		float area;
+		inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
+			FOREACHRAWPTR(pIdx, indices, size)
+				area += areas[*pIdx];
+		}
+		inline float PopArea() {
+			const float a(area);
+			area = 0;
+			return a;
+		}
+	} areaEstimator{areas, 0.f};
+	struct ChunkInserter {
+		const IIndex numImages;
+		const Octree& octree;
+		const IIndexArr& visibility;
+		ImagesChunkArr& chunks;
+		CLISTDEF2(Unsigned32Arr) imagesAreas;
+		void operator() (const Octree::CELL_TYPE& parentCell, Octree::Type parentRadius, const UnsignedArr& children) {
+			ASSERT(!children.empty());
+			ImagesChunk& chunk = chunks.AddEmpty();
+			Unsigned32Arr& imageAreas = imagesAreas.AddEmpty();
+			imageAreas.resize(numImages);
+			imageAreas.Memset(0);
+			struct Inserter {
+				const IIndexArr& visibility;
+				std::unordered_set<IIndex>& images;
+				Unsigned32Arr& imageAreas;
+				inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
+					FOREACHRAWPTR(pIdx, indices, size) {
+						const IIndex idxImage(visibility[*pIdx]);
+						images.emplace(idxImage);
+						++imageAreas[idxImage];
+					}
+				}
+			} inserter{visibility, chunk.images, imageAreas};
+			if (children.size() == 1) {
+				octree.CollectCells(parentCell.GetChild(children.front()), inserter);
+				chunk.aabb = parentCell.GetChildAabb(children.front(), parentRadius);
+			} else {
+				chunk.aabb.Reset();
+				for (unsigned c: children) {
+					octree.CollectCells(parentCell.GetChild(c), inserter);
+					chunk.aabb.Insert(parentCell.GetChildAabb(c, parentRadius));
+				}
+			}
+			if (chunk.images.empty()) {
+				chunks.RemoveLast();
+				imagesAreas.RemoveLast();
+			}
+		}
+	} chunkInserter{images.size(), octree, visibility, chunks};
+	octree.SplitVolume(maxArea, areaEstimator, chunkInserter);
+	if (chunks.size() < 2)
+		return 0;
+	// remove images with very little contribution
+	const float minImageContributionRatio(0.25f);
+	FOREACH(c, chunks) {
+		ImagesChunk& chunk = chunks[c];
+		const Unsigned32Arr& chunkImageAreas = chunkInserter.imagesAreas[c];
+		for (auto it = chunk.images.begin(); it != chunk.images.end(); ) {
+			const IIndex idxImage(*it);
+			if (float(chunkImageAreas[idxImage])/float(imageAreas[idxImage]) < minImageContributionRatio)
+				it = chunk.images.erase(it);
+			else
+				++it;
+		}
+	}
+	DEBUG_EXTRA("Scene split (%g max-area): %u chunks (%s)", maxArea, chunks.size(), TD_TIMER_GET_FMT().c_str());
+	#if 1
+	// dump chunks for visualization
+	FOREACH(c, chunks) {
+		const ImagesChunk& chunk = chunks[c];
+		PointCloud pc = pointcloud;
+		pc.RemovePointsOutside(OBB3f(OBB3f::MATRIX::Identity(), chunk.aabb.ptMin, chunk.aabb.ptMax));
+		pc.Save(String::FormatString(MAKE_PATH("scene_%04u.ply"), c));
+	}
+	#endif
+	return chunks.size();
+} // Split
+
+// split the scene in sub-scenes according to the given chunks array, and save them to disk
+bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path) const
+{
+	FOREACH(chunkID, chunks) {
+		const ImagesChunk& chunk = chunks[chunkID];
+		Scene subset;
+		subset.nCalibratedImages = (IIndex)chunk.images.size();
+		// extract chunk images
+		typedef std::unordered_map<IIndex,IIndex> MapIIndex;
+		MapIIndex mapPlatforms(platforms.size());
+		MapIIndex mapImages(images.size());
+		FOREACH(idxImage, images) {
+			if (chunk.images.find(idxImage) == chunk.images.end())
+				continue;
+			const Image& image = images[idxImage];
+			if (!image.IsValid())
+				continue;
+			// copy platform
+			const Platform& platform = platforms[image.platformID];
+			MapIIndex::iterator itSubPlatformMVS = mapPlatforms.find(image.platformID);
+			uint32_t subPlatformID;
+			if (itSubPlatformMVS == mapPlatforms.end()) {
+				ASSERT(subset.platforms.size() == mapPlatforms.size());
+				subPlatformID = subset.platforms.size();
+				mapPlatforms.emplace(image.platformID, subPlatformID);
+				Platform subPlatform;
+				subPlatform.name = platform.name;
+				subPlatform.cameras = platform.cameras;
+				subset.platforms.emplace_back(std::move(subPlatform));
+			} else {
+				subPlatformID = itSubPlatformMVS->second;
+			}
+			Platform& subPlatform = subset.platforms[subPlatformID];
+			// copy image
+			const IIndex idxImageNew((IIndex)mapImages.size());
+			mapImages[idxImage] = idxImageNew;
+			Image subImage(image);
+			subImage.platformID = subPlatformID;
+			subImage.poseID = subPlatform.poses.size();
+			subImage.ID = idxImage;
+			subset.images.emplace_back(std::move(subImage));
+			// copy pose
+			subPlatform.poses.emplace_back(platform.poses[image.poseID]);
+		}
+		// map image IDs from global to local
+		for (Image& image: subset.images) {
+			RFOREACH(i, image.neighbors) {
+				ViewScore& neighbor = image.neighbors[i];
+				const auto itImage(mapImages.find(neighbor.idx.ID));
+				if (itImage == mapImages.end()) {
+					image.neighbors.RemoveAtMove(i);
+					continue;
+				}
+				ASSERT(itImage->second < subset.images.size());
+				neighbor.idx.ID = itImage->second;
+			}
+		}
+		// extract point-cloud
+		FOREACH(idxPoint, pointcloud.points) {
+			PointCloud::ViewArr subViews;
+			PointCloud::WeightArr subWeights;
+			const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
+			FOREACH(i, views) {
+				const IIndex idxImage(views[i]);
+				const auto itImage(mapImages.find(idxImage));
+				if (itImage == mapImages.end())
+					continue;
+				subViews.emplace_back(itImage->second);
+				if (!pointcloud.pointWeights.empty())
+					subWeights.emplace_back(pointcloud.pointWeights[idxPoint][i]);
+			}
+			if (subViews.size() < 2)
+				continue;
+			subset.pointcloud.points.emplace_back(pointcloud.points[idxPoint]);
+			subset.pointcloud.pointViews.emplace_back(std::move(subViews));
+			if (!pointcloud.pointWeights.empty())
+				subset.pointcloud.pointWeights.emplace_back(std::move(subWeights));
+			if (!pointcloud.colors.empty())
+				subset.pointcloud.colors.emplace_back(pointcloud.colors[idxPoint]);
+		}
+		// set scene ROI
+		subset.obb.Set(OBB3f::MATRIX::Identity(), chunk.aabb.ptMin, chunk.aabb.ptMax);
+		// serialize out the current state
+		if (!subset.Save(String::FormatString("%s" PATH_SEPARATOR_STR "scene_%04u.mvs", path.c_str(), chunkID)))
+			return false;
+	}
+	return true;
+} // ExportChunks
 /*----------------------------------------------------------------*/

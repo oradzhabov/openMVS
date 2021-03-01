@@ -82,6 +82,37 @@ public:
 
 	typedef AABB3f Box;
 
+	// used to render a mesh
+	typedef TOctree<VertexArr,Vertex::Type,3> Octree;
+	struct FacesInserter {
+		FaceIdxArr& cameraFaces;
+		FacesInserter(FaceIdxArr& _cameraFaces)
+			: cameraFaces(_cameraFaces) {}
+		inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
+			cameraFaces.Join(indices, size);
+		}
+		static void CreateOctree(Octree& octree, const Mesh& mesh) {
+			VertexArr centroids(mesh.faces.size());
+			FOREACH(idx, mesh.faces)
+				centroids[idx] = mesh.ComputeCentroid(idx);
+			octree.Insert(centroids, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
+				return size > 32;
+			});
+			#if 0 && !defined(_RELEASE)
+			Octree::DEBUGINFO_TYPE info;
+			octree.GetDebugInfo(&info);
+			Octree::LogDebugInfo(info);
+			#endif
+			octree.ResetItems();
+		}
+	};
+
+	struct FaceChunk {
+		FaceIdxArr faces;
+		Box box;
+	};
+	typedef cList<FaceChunk,const FaceChunk&,2,16,uint32_t> FacesChunkArr;
+
 public:
 	VertexArr vertices;
 	FaceArr faces;
@@ -140,6 +171,7 @@ public:
 	void CloseHoleQuality(VertexIdxArr& vertsLoop);
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
+	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
 
 	inline Normal FaceNormal(const Face& f) const {
 		return ComputeTriangleNormal(vertices[f[0]], vertices[f[1]], vertices[f[2]]);
@@ -154,6 +186,8 @@ public:
 		return n;
 	}
 
+	Vertex ComputeCentroid(FIndex) const;
+	Type ComputeArea(FIndex) const;
 	REAL ComputeArea() const;
 	REAL ComputeVolume() const;
 
@@ -167,9 +201,13 @@ public:
 	void ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
 	void ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& mask, Point3& center) const;
 
+	bool Split(FacesChunkArr&, float maxArea);
+	Mesh SubMesh(const FaceIdxArr& faces) const;
+
 	// file IO
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
+	bool Save(const FacesChunkArr&, const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	static bool Save(const VertexArr& vertices, const String& fileName, bool bBinary=true);
 
 	static inline uint32_t FindVertex(const Face& f, VIndex v) { for (uint32_t i=0; i<3; ++i) if (f[i] == v) return i; return NO_ID; }

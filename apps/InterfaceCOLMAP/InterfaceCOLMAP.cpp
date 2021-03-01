@@ -64,7 +64,7 @@ using namespace MVS;
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace OPT {
-bool b3Dnovator2COLMAP; // conversion direction
+bool bFromOpenMVS; // conversion direction
 bool bNormalizeIntrinsics;
 String strInputFileName;
 String strOutputFileName;
@@ -109,7 +109,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input COLMAP folder containing cameras, images and points files OR input MVS project file")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the MVS project")
 		("image-folder", boost::program_options::value<std::string>(&OPT::strImageFolder)->default_value(COLMAP_IMAGES_FOLDER), "folder to the undistorted images")
-		("normalize,f", boost::program_options::value(&OPT::bNormalizeIntrinsics)->default_value(true), "normalize intrinsics while exporting to MVS format")
+		("normalize,f", boost::program_options::value(&OPT::bNormalizeIntrinsics)->default_value(false), "normalize intrinsics while exporting to MVS format")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -147,8 +147,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
-	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
-	OPT::b3Dnovator2COLMAP = (strInputFileNameExt == MVS_EXT);
 	const bool bInvalidCommand(OPT::strInputFileName.empty());
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
@@ -166,7 +164,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// initialize optional options
 	Util::ensureValidFolderPath(OPT::strImageFolder);
 	Util::ensureValidPath(OPT::strOutputFileName);
-	if (OPT::b3Dnovator2COLMAP) {
+	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
+	OPT::bFromOpenMVS = (strInputFileNameExt == MVS_EXT);
+	if (OPT::bFromOpenMVS) {
 		if (OPT::strOutputFileName.empty())
 			OPT::strOutputFileName = Util::getFilePath(OPT::strInputFileName);
 	} else {
@@ -627,11 +627,7 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			camera.C = Interface::Pos3d(0,0,0);
 			if (OPT::bNormalizeIntrinsics) {
 				// normalize camera intrinsics
-				const REAL fScale(REAL(1)/Camera::GetNormalizationScale(colmapCamera.width, colmapCamera.height));
-				camera.K(0,0) *= fScale;
-				camera.K(1,1) *= fScale;
-				camera.K(0,2) *= fScale;
-				camera.K(1,2) *= fScale;
+				camera.K = Camera::ScaleK<double>(camera.K, 1.0/Camera::GetNormalizationScale(colmapCamera.width, colmapCamera.height));
 			} else {
 				camera.width = colmapCamera.width;
 				camera.height = colmapCamera.height;
@@ -774,16 +770,12 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 			ASSERT(platform.cameras.size() == 1); // only one camera per platform supported
 			const Interface::Platform::Camera& camera = platform.cameras[0];
 			cam.ID = ID;
-			cam.params[0] = camera.K(0,0);
-			cam.params[1] = camera.K(1,1);
-			cam.params[2] = camera.K(0,2);
-			cam.params[3] = camera.K(1,2);
 			if (camera.width == 0 || camera.height == 0) {
 				// find one image using this camera
 				const Interface::Image* pImage(NULL);
 				for (uint32_t i=0; i<(uint32_t)scene.images.size(); ++i) {
 					const Interface::Image& image = scene.images[i];
-					if (image.platformID == ID && image.cameraID == 0 && image.poseID != NO_ID) {
+					if (image.platformID == ID && image.cameraID == 0 && image.poseID != MVS::NO_ID) {
 						pImage = &image;
 						break;
 					}
@@ -797,20 +789,23 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 					return false;
 				cam.width = ptrImage->GetWidth();
 				cam.height = ptrImage->GetHeight();
-				// denormalize camera intrinsics
-				const double fScale(MVS::Camera::GetNormalizationScale(cam.width, cam.height));
-				cam.params[0] *= fScale;
-				cam.params[1] *= fScale;
-				cam.params[2] *= fScale;
-				cam.params[3] *= fScale;
+				// unnormalize camera intrinsics
+				const double scale(MVS::Camera::GetNormalizationScale(cam.width, cam.height));
+				cam.params[0] = camera.K(0,0) * scale;
+				cam.params[1] = camera.K(1,1) * scale;
+				cam.params[2] = camera.K(0,2) * scale;
+				cam.params[3] = camera.K(1,2) * scale;
 			} else {
 				cam.width = camera.width;
 				cam.height = camera.height;
+				cam.params[0] = camera.K(0,0);
+				cam.params[1] = camera.K(1,1);
+				cam.params[2] = camera.K(0,2);
+				cam.params[3] = camera.K(1,2);
 			}
 			if (!cam.Write(file))
 				return false;
-			KMatrix& K = Ks.AddEmpty();
-			K = KMatrix::IDENTITY;
+			KMatrix& K = Ks.emplace_back(KMatrix::IDENTITY);
 			K(0,0) = cam.params[0];
 			K(1,1) = cam.params[1];
 			K(0,2) = cam.params[2];
@@ -831,7 +826,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 		cameras.resize(scene.images.size());
 		for (uint32_t ID=0; ID<(uint32_t)scene.images.size(); ++ID) {
 			const Interface::Image& image = scene.images[ID];
-			if (image.poseID == NO_ID)
+			if (image.poseID == MVS::NO_ID)
 				continue;
 			const Interface::Platform& platform = scene.platforms[image.platformID];
 			const Interface::Platform::Pose& pose = platform.poses[image.poseID];
@@ -982,7 +977,9 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 		file << _T("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME") << std::endl;
 		file << _T("#   POINTS2D[] as (X, Y, POINT3D_ID)") << std::endl;
 		for (const COLMAP::Image& img: images) {
-			if ((bSparsePointCloud && img.projs.empty()) || !img.Write(file))
+			if (bSparsePointCloud && img.projs.empty())
+				continue;
+			if (!img.Write(file))
 				return false;
 		}
 	}
@@ -1007,7 +1004,7 @@ bool ExportImagesLog(const String& fileName, const Interface& scene)
 		const Interface::Image& image = scene.images[ID];
 		Eigen::Matrix3d R(Eigen::Matrix3d::Identity());
 		Eigen::Vector3d t(Eigen::Vector3d::Zero());
-		if (image.poseID != NO_ID) {
+		if (image.poseID != MVS::NO_ID) {
 			const Interface::Platform& platform = scene.platforms[image.platformID];
 			const Interface::Platform::Pose& pose = platform.poses[image.poseID];
 			R = Eigen::Map<const EMat33d>(pose.R.val).transpose();
@@ -1025,6 +1022,66 @@ bool ExportImagesLog(const String& fileName, const Interface& scene)
 	return !out.fail();
 }
 
+
+// export poses in Strecha camera format:
+// Strecha model is P = K[R^T|-R^T t]
+// our model is P = K[R|t], t = -RC
+bool ExportImagesCamera(const String& pathName, const Interface& scene)
+{
+	LOG_OUT() << "Writing poses: " << pathName << std::endl;
+	Util::ensureFolder(pathName);
+	for (uint32_t ID=0; ID<(uint32_t)scene.images.size(); ++ID) {
+		const Interface::Image& image = scene.images[ID];
+		String imageFileName(image.name);
+		Util::ensureValidPath(imageFileName);
+		const String fileName(pathName+Util::getFileNameExt(imageFileName)+".camera");
+		std::ofstream out(fileName);
+		if (!out.good()) {
+			VERBOSE("error: unable to open file '%s'", fileName.c_str());
+			return false;
+		}
+		out << std::setprecision(12);
+		KMatrix K(KMatrix::IDENTITY);
+		RMatrix R(RMatrix::IDENTITY);
+		CMatrix t(CMatrix::ZERO);
+		unsigned width(0), height(0);
+		if (image.platformID != MVS::NO_ID && image.cameraID != MVS::NO_ID) {
+			const Interface::Platform& platform = scene.platforms[image.platformID];
+			const Interface::Platform::Camera& camera = platform.cameras[image.cameraID];
+			if (camera.HasResolution()) {
+				width = camera.width;
+				height = camera.height;
+				K = camera.K;
+			} else {
+				IMAGEPTR pImage = Image::ReadImageHeader(image.name);
+				width = pImage->GetWidth();
+				height = pImage->GetHeight();
+				K = platform.GetFullK(image.cameraID, width, height);
+			}
+			if (image.poseID != MVS::NO_ID) {
+				const Interface::Platform::Pose& pose = platform.poses[image.poseID];
+				R = pose.R.t();
+				t = pose.C;
+			}
+		}
+		out << K(0,0) << _T(" ") << K(0,1) << _T(" ") << K(0,2) << _T("\n");
+		out << K(1,0) << _T(" ") << K(1,1) << _T(" ") << K(1,2) << _T("\n");
+		out << K(2,0) << _T(" ") << K(2,1) << _T(" ") << K(2,2) << _T("\n");
+		out << _T("0 0 0") << _T("\n");
+		out << R(0,0) << _T(" ") << R(0,1) << _T(" ") << R(0,2) << _T("\n");
+		out << R(1,0) << _T(" ") << R(1,1) << _T(" ") << R(1,2) << _T("\n");
+		out << R(2,0) << _T(" ") << R(2,1) << _T(" ") << R(2,2) << _T("\n");
+		out << t.x << _T(" ") << t.y << _T(" ") << t.z << _T("\n");
+		out << width << _T(" ") << height << _T("\n");
+		if (out.fail()) {
+			VERBOSE("error: unable to write file '%s'", fileName.c_str());
+			return false;
+		}
+	}
+	return true;
+}
+
+
 int main(int argc, LPCTSTR* argv)
 {
 	#ifdef _DEBUGINFO
@@ -1037,7 +1094,7 @@ int main(int argc, LPCTSTR* argv)
 
 	TD_TIMER_START();
 
-	if (OPT::b3Dnovator2COLMAP) {
+	if (OPT::bFromOpenMVS) {
 		// read MVS input data
 		Interface scene;
 		if (!ARCHIVE::SerializeLoad(scene, MAKE_PATH_SAFE(OPT::strInputFileName)))
@@ -1045,6 +1102,10 @@ int main(int argc, LPCTSTR* argv)
 		if (Util::getFileExt(OPT::strOutputFileName) == _T(".log")) {
 			// write poses in log format
 			ExportImagesLog(MAKE_PATH_SAFE(OPT::strOutputFileName), scene);
+		} else
+		if (Util::getFileExt(OPT::strOutputFileName) == _T(".camera")) {
+			// write poses in Strecha camera format
+			ExportImagesCamera((OPT::strOutputFileName=Util::getFileFullName(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputFileName)))+PATH_SEPARATOR, scene);
 		} else {
 			// write COLMAP input data
 			Util::ensureFolderSlash(OPT::strOutputFileName);
@@ -1058,7 +1119,7 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		// write MVS input data
 		Util::ensureFolder(Util::getFullPath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputFileName)));
-		if (!ARCHIVE::SerializeSave(scene, MAKE_PATH_SAFE(OPT::strOutputFileName), (uint32_t)OPT::bNormalizeIntrinsics?0:1))
+		if (!ARCHIVE::SerializeSave(scene, MAKE_PATH_SAFE(OPT::strOutputFileName)))
 			return EXIT_FAILURE;
 		VERBOSE("Exported data: %u images & %u vertices (%s)", scene.images.size(), scene.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	}

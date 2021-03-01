@@ -92,7 +92,8 @@ MDEFVAR_OPTDENSE_float(fPairwiseMul, "Pairwise Mul", "pairwise cost scale to mat
 MDEFVAR_OPTDENSE_float(fOptimizerEps, "Optimizer Eps", "MRF optimizer stop epsilon", "0.001")
 MDEFVAR_OPTDENSE_int32(nOptimizerMaxIters, "Optimizer Max Iters", "MRF optimizer max number of iterations", "80")
 MDEFVAR_OPTDENSE_uint32(nSpeckleSize, "Speckle Size", "maximal size of a speckle (small speckles get removed)", "100")
-MDEFVAR_OPTDENSE_uint32(nIpolGapSize, "Interpolate Gap Size", "interpolate small gaps (left<->right, top<->bottom)", "99999")
+MDEFVAR_OPTDENSE_uint32(nIpolGapSize, "Interpolate Gap Size", "interpolate small gaps (left<->right, top<->bottom)", "7")
+MDEFVAR_OPTDENSE_int32(nIgnoreMaskLabel, "Ignore Mask Label", "label id used during ignore mask filter (<0 - disabled)", "-1")
 MDEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps?", "7") // see DepthFlags
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "0", "1", "2")
@@ -191,6 +192,26 @@ void DepthData::GetNormal(const Point2f& pt, Point3f& N, const TImage<Point3f>* 
 /*----------------------------------------------------------------*/
 
 
+// apply mask to the depth map
+void DepthData::ApplyIgnoreMask(const BitMatrix& mask)
+{
+	ASSERT(IsValid() && !IsEmpty() && mask.size() == depthMap.size());
+	for (int r=0; r<depthMap.rows; ++r) {
+		for (int c=0; c<depthMap.cols; ++c) {
+			if (mask.isSet(r,c))
+				continue;
+			// discard depth-map section ignored by mask
+			depthMap(r,c) = 0;
+			if (!normalMap.empty())
+				normalMap(r,c) = Normal::ZERO;
+			if (!confMap.empty())
+				confMap(r,c) = 0;
+		}
+	}
+} // ApplyIgnoreMask
+/*----------------------------------------------------------------*/
+
+
 bool DepthData::Save(const String& fileName) const
 {
 	ASSERT(IsValid() && !depthMap.empty() && !confMap.empty());
@@ -212,7 +233,6 @@ bool DepthData::Save(const String& fileName) const
 }
 bool DepthData::Load(const String& fileName)
 {
-	ASSERT(IsValid());
 	// serialize in the saved state
 	String imageFileName;
 	IIndexArr IDs;
@@ -220,8 +240,7 @@ bool DepthData::Load(const String& fileName)
 	Camera camera;
 	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap))
 		return false;
-	ASSERT(IDs.size() == images.size());
-	ASSERT(IDs.front() == GetView().GetID());
+	ASSERT(!IsValid() || (IDs.size() == images.size() && IDs.front() == GetView().GetID()));
 	ASSERT(depthMap.size() == imageSize);
 	return true;
 }
@@ -254,6 +273,30 @@ unsigned DepthData::DecRef()
 
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+// try to load and apply mask to the depth map;
+// the mask marks as false pixels that should be ignored
+bool DepthEstimator::ImportIgnoreMask(const Image& image0, const Image8U::Size& size, BitMatrix& bmask, uint16_t nIgnoreMaskLabel)
+{
+	ASSERT(image0.IsValid() && !image0.image.empty());
+	if (image0.maskName.empty())
+		return false;
+	Image16U mask;
+	if (!mask.Load(image0.maskName)) {
+		DEBUG("warning: can not load the segmentation mask '%s'", image0.maskName.c_str());
+		return false;
+	}
+	cv::resize(mask, mask, size, 0, 0, cv::INTER_NEAREST);
+	bmask.create(size);
+	bmask.memset(0xFF);
+	for (int r=0; r<size.height; ++r) {
+		for (int c=0; c<size.width; ++c) {
+			if (mask(r,c) == nIgnoreMaskLabel)
+				bmask.unset(r,c);
+		}
+	}
+	return true;
+} // ImportIgnoreMask
 
 // create the map for converting index to matrix position
 //                         1 2 3
@@ -1874,15 +1917,15 @@ void MVS::CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT,
 			}
 			depths.Insert(depth);
 			depthsGT.Insert(depthGT);
-			const float error(depthGT==0 ? 0 : ABS(depth-depthGT)/depthGT);
+			const float error(depthGT==0 ? 0 : DepthSimilarity(depthGT, depth));
 			errors.Insert(error);
 		}
 	}
-	const float fPSNR((float)ComputePSNR(DMatrix32F((int)depths.GetSize(),1,depths.GetData()), DMatrix32F((int)depthsGT.GetSize(),1,depthsGT.GetData())));
-	const MeanStd<float,double> ms(errors.Begin(), errors.GetSize());
+	const float fPSNR((float)ComputePSNR(DMatrix32F((int)depths.size(),1,depths.data()), DMatrix32F((int)depthsGT.size(),1,depthsGT.data())));
+	const MeanStd<float,double> ms(errors.data(), errors.size());
 	const float mean((float)ms.GetMean());
 	const float stddev((float)ms.GetStdDev());
-	const std::pair<float,float> th(ComputeX84Threshold<float,float>(errors.Begin(), errors.GetSize()));
+	const std::pair<float,float> th(ComputeX84Threshold<float,float>(errors.data(), errors.size()));
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	IDX idxPixel = 0;
 	Image8U3 errorsVisual(depthMap.size());
