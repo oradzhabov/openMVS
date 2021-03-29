@@ -278,6 +278,12 @@ struct TRasterMesh {
 	inline void operator()(const ImageRef& pt) {
 		static_cast<DERIVED*>(this)->Raster(pt);
 	}
+	inline const int width() const {
+		return static_cast<const DERIVED*>(this)->width();
+	}
+	inline const int height() const {
+		return static_cast<const DERIVED*>(this)->height();
+	}
 };
 /*----------------------------------------------------------------*/
 

@@ -168,6 +168,12 @@ struct MeshTexture {
 				faceMap(pt) = idxFace;
 			}
 		}
+		inline const int width() const {
+			return depthMap.width();
+		}
+		inline const int height() const {
+			return depthMap.height();
+		}
 	};
 
 	// used to represent a pixel color
@@ -329,6 +335,12 @@ struct MeshTexture {
 			ASSERT(image.isInside(pt));
 			image(pt) = colors[0]*b.x + colors[1]*b.y + colors[2]*b.z;
 		}
+		inline const int width() const {
+			return image.width();
+		}
+		inline const int height() const {
+			return image.height();
+		}
 	};
 
 	// used to compute the coverage of a texture patch
@@ -340,6 +352,12 @@ struct MeshTexture {
 		inline void operator()(const ImageRef& pt) {
 			ASSERT(image.isInside(pt));
 			image(pt) = interior;
+		}
+		inline const int width() const {
+			return image.width();
+		}
+		inline const int height() const {
+			return image.height();
 		}
 	};
 

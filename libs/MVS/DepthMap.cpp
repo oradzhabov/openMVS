@@ -1045,6 +1045,12 @@ bool MVS::TriangulatePoints2DepthMap(
 			depthMap(pt) = z;
 			normalMap(pt) = normal;
 		}
+		inline const int width() const {
+			return depthMap.width();
+		}
+		inline const int height() const {
+			return depthMap.height();
+		}
 	};
 	RasterDepthDataPlaneData data = {camera, depthMap, normalMap};
 	for (CGAL::Delaunay::Face_iterator it=delaunay.faces_begin(); it!=delaunay.faces_end(); ++it) {
@@ -1097,6 +1103,12 @@ bool MVS::TriangulatePoints2DepthMap(
 			if (z <= 0) // due to numerical instability
 				return;
 			depthMap(pt) = z;
+		}
+		inline const int width() const {
+			return depthMap.width();
+		}
+		inline const int height() const {
+			return depthMap.height();
 		}
 	};
 	RasterDepthDataPlaneData data = {camera, depthMap};

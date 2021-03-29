@@ -2506,6 +2506,12 @@ void TImage<TYPE>::RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2,
 	int miny = (int)((MINF3(Y1, Y2, Y3) + 0xF) >> 4);
 	int maxy = (int)((MAXF3(Y1, Y2, Y3) + 0xF) >> 4);
 
+	// Optimize solution by rectifying domain
+	minx = std::max<int>(minx, 0);
+	miny = std::max<int>(miny, 0);
+	maxx = std::min<int>(maxx, parser.width());
+	maxy = std::min<int>(maxy, parser.height());
+
 	// Block size, standard 8x8 (must be power of two)
 	const int q = 8;
 
