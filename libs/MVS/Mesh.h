@@ -146,6 +146,7 @@ public:
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;
+	Vertex GetCenter() const;
 
 	void ListIncidenteVertices();
 	void ListIncidenteFaces();
@@ -172,6 +173,7 @@ public:
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
 	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
+	void ConvertTexturePerVertex(Mesh&) const;
 
 	inline Normal FaceNormal(const Face& f) const {
 		return ComputeTriangleNormal(vertices[f[0]], vertices[f[1]], vertices[f[2]]);
@@ -220,6 +222,7 @@ protected:
 
 	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	bool SaveOBJ(const String& fileName) const;
+	bool SaveGLTF(const String& fileName, bool bBinary=true) const;
 
 	#ifdef _USE_CUDA
 	static bool InitKernels(int device=-1);
@@ -245,10 +248,9 @@ protected:
 /*----------------------------------------------------------------*/
 
 
-// used to render a mesh
+// used to render a 3D triangle
 template <typename DERIVED>
-struct TRasterMesh {
-	const Mesh::VertexArr& vertices;
+struct TRasterMeshBase {
 	const Camera& camera;
 
 	DepthMap& depthMap;
@@ -256,8 +258,8 @@ struct TRasterMesh {
 	Point3 ptc[3];
 	Point2f pti[3];
 
-	TRasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
-		: vertices(_vertices), camera(_camera), depthMap(_depthMap) {}
+	TRasterMeshBase(const Camera& _camera, DepthMap& _depthMap)
+		: camera(_camera), depthMap(_depthMap) {}
 
 	inline void Clear() {
 		depthMap.memset(0);
@@ -266,19 +268,9 @@ struct TRasterMesh {
 		return depthMap.size();
 	}
 
-	inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
+	inline bool ProjectVertex(const Point3f& pt, int v) {
 		return (ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
 			depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointC2I(ptc[v]));
-	}
-	void Project(const Mesh::Face& facet) {
-		// project face vertices to image plane
-		for (int v=0; v<3; ++v) {
-			// skip face if not completely inside
-			if (!static_cast<DERIVED*>(this)->ProjectVertex(vertices[facet[v]], v))
-				return;
-		}
-		// draw triangle
-		Image8U3::RasterizeTriangleBary(pti[0], pti[1], pti[2], *this);
 	}
 
 	inline Point3f PerspectiveCorrectBarycentricCoordinates(const Point3f& bary) {
@@ -297,6 +289,34 @@ struct TRasterMesh {
 	}
 	inline void operator()(const ImageRef& pt, const Point3f& bary) {
 		static_cast<DERIVED*>(this)->Raster(pt, bary);
+	}
+};
+
+// used to render a mesh
+template <typename DERIVED>
+struct TRasterMesh : TRasterMeshBase<DERIVED> {
+	typedef TRasterMeshBase<DERIVED> Base;
+
+	using Base::camera;
+	using Base::depthMap;
+
+	using Base::ptc;
+	using Base::pti;
+
+	const Mesh::VertexArr& vertices;
+
+	TRasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
+		: Base(_camera, _depthMap), vertices(_vertices) {}
+
+	void Project(const Mesh::Face& facet) {
+		// project face vertices to image plane
+		for (int v=0; v<3; ++v) {
+			// skip face if not completely inside
+			if (!static_cast<DERIVED*>(this)->ProjectVertex(vertices[facet[v]], v))
+				return;
+		}
+		// draw triangle
+		Image8U3::RasterizeTriangleBary(pti[0], pti[1], pti[2], *this);
 	}
 };
 /*----------------------------------------------------------------*/

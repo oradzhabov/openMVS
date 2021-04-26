@@ -562,6 +562,44 @@ struct Point {
 	}
 };
 typedef std::vector<Point> Points;
+// structure describing an 2D dynamic matrix
+template <typename T>
+struct Mat {
+	size_t width_ = 0;
+	size_t height_ = 0;
+	size_t depth_ = 0;
+	std::vector<T> data_;
+
+	size_t GetNumBytes() const {
+		return data_.size() * sizeof(T);
+	}
+	const T* GetChannelPtr(size_t c) const {
+		return data_.data()+width_*height_*c;
+	}
+
+	// See: colmap/src/mvs/mat.h
+	void Read(const std::string& path) {
+		std::streampos pos; {
+			std::fstream text_file(path, std::ios::in | std::ios::binary);
+			char unused_char;
+			text_file >> width_ >> unused_char >> height_ >> unused_char >> depth_ >>
+				unused_char;
+			pos = text_file.tellg();
+		}
+		data_.resize(width_ * height_ * depth_);
+		std::fstream binary_file(path, std::ios::in | std::ios::binary);
+		binary_file.seekg(pos);
+		ReadBinaryLittleEndian<T>(&binary_file, &data_);
+	}
+	void Write(const std::string& path) const {
+		{
+			std::fstream text_file(path, std::ios::out);
+			text_file << width_ << "&" << height_ << "&" << depth_ << "&";
+		}
+		std::fstream binary_file(path, std::ios::out | std::ios::binary | std::ios::app);
+		WriteBinaryLittleEndian<T>(&binary_file, data_);
+	}
+};
 } // namespace COLMAP
 
 typedef Eigen::Matrix<double,3,3,Eigen::RowMajor> EMat33d;
