@@ -96,6 +96,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	unsigned nMinViewsFuse;
 	unsigned nEstimateColors;
 	unsigned nEstimateNormals;
+	unsigned nEstimationGeometricIters;
 	int nIgnoreMaskLabel;
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
@@ -113,6 +114,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth map fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
+		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(3), "Number of geometric consistent patch-match iterations (0 - disabled)")
 		;
 
 	// hidden options, allowed both on command line and
@@ -186,6 +188,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
 	OPTDENSE::nIgnoreMaskLabel = nIgnoreMaskLabel;
+	OPTDENSE::nEstimationGeometricIters = nEstimationGeometricIters;
 	if (!bValidConfig && !OPT::strDenseConfigFileName.IsEmpty())
 		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
 
