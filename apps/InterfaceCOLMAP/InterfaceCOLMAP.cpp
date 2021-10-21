@@ -781,6 +781,95 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			scene.verticesColor.emplace_back(Interface::Color{pointcloud.colors[i]});
 		}
 	}
+
+	// read depth-maps
+	const String pathDepthMaps(strFolder+COLMAP_STEREO_DEPTHMAPS_FOLDER);
+	const String pathNormalMaps(strFolder+COLMAP_STEREO_NORMALMAPS_FOLDER);
+	if (File::isFolder(pathDepthMaps) && File::isFolder(pathNormalMaps)) {
+		// read patch-match list
+		CLISTDEF2IDX(IIndexArr,IIndex) imagesNeighbors((IIndex)scene.images.size());
+		{
+			const String filenameFusion(strFolder+COLMAP_PATCHMATCH);
+			LOG_OUT() << "Reading patch-match configuration: " << filenameFusion << std::endl;
+			std::ifstream file(filenameFusion);
+			if (!file.good()) {
+				VERBOSE("error: unable to open file '%s'", filenameFusion.c_str());
+				return false;
+			}
+			while (true) {
+				String imageName, neighbors;
+				std::getline(file, imageName);
+				std::getline(file, neighbors);
+				if (file.fail() || imageName.empty() || neighbors.empty())
+					break;
+				const ImagesMap::const_iterator it_image = std::find_if(mapImages.begin(), mapImages.end(),
+					[&imageName](const ImagesMap::value_type& image) {
+						return image.first.name == imageName;
+					});
+				if (it_image == mapImages.end())
+					continue;
+				IIndexArr& imageNeighbors =  imagesNeighbors[it_image->second];
+				CLISTDEF2(String) neighborNames;
+				Util::strSplit(neighbors, _T(','), neighborNames);
+				FOREACH(i, neighborNames) {
+					String& neighborName = neighborNames[i];
+					Util::strTrim(neighborName, _T(" "));
+					const ImagesMap::const_iterator it_neighbor = std::find_if(mapImages.begin(), mapImages.end(),
+						[&neighborName](const ImagesMap::value_type& image) {
+							return image.first.name == neighborName;
+						});
+					if (it_neighbor == mapImages.end()) {
+						if (i == 0)
+							break;
+						continue;
+					}
+					imageNeighbors.emplace_back(scene.images[it_neighbor->second].ID);
+				}
+			}
+		}
+		LOG_OUT() << "Reading depth-maps/normal-maps: " << pathDepthMaps << " and " << pathNormalMaps << std::endl;
+		Util::ensureFolder(strOutFolder);
+		const String strType[] = {".geometric.bin", ".photometric.bin"};
+		FOREACH(idx, scene.images) {
+			const Interface::Image& image = scene.images[idx];
+			COLMAP::Mat<float> colDepthMap, colNormalMap;
+			const String filenameImage(Util::getFileNameExt(image.name));
+			for (int i=0; i<2; ++i) {
+				const String filenameDepthMaps(pathDepthMaps+filenameImage+strType[i]);
+				if (File::isFile(filenameDepthMaps)) {
+					colDepthMap.Read(filenameDepthMaps);
+					const String filenameNormalMaps(pathNormalMaps+filenameImage+strType[i]);
+					if (File::isFile(filenameNormalMaps)) {
+						colNormalMap.Read(filenameNormalMaps);
+					}
+					break;
+				}
+			}
+			if (!colDepthMap.data_.empty()) {
+				IIndexArr IDs = {image.ID};
+				IDs.Join(imagesNeighbors[(IIndex)idx]);
+				const Interface::Platform& platform = scene.platforms[image.platformID];
+				const Interface::Platform::Pose pose(platform.GetPose(image.cameraID, image.poseID));
+				const Interface::Mat33d K(platform.GetFullK(image.cameraID, (uint32_t)colDepthMap.width_, (uint32_t)colDepthMap.height_));
+				MVS::DepthMap depthMap((int)colDepthMap.height_, (int)colDepthMap.width_);
+				memcpy(depthMap.getData(), colDepthMap.data_.data(), colDepthMap.GetNumBytes());
+				MVS::NormalMap normalMap;
+				if (!colNormalMap.data_.empty()) {
+					normalMap.create((int)colNormalMap.height_, (int)colNormalMap.width_);
+					cv::merge(std::vector<cv::Mat>{
+						cv::Mat((int)colNormalMap.height_, (int)colNormalMap.width_, CV_32F, (void*)colNormalMap.GetChannelPtr(0)),
+						cv::Mat((int)colNormalMap.height_, (int)colNormalMap.width_, CV_32F, (void*)colNormalMap.GetChannelPtr(1)),
+						cv::Mat((int)colNormalMap.height_, (int)colNormalMap.width_, CV_32F, (void*)colNormalMap.GetChannelPtr(2))
+					}, normalMap);
+				}
+				MVS::ConfidenceMap confMap;
+				const auto depthMM(std::minmax_element(colDepthMap.data_.cbegin(), colDepthMap.data_.cend()));
+				const MVS::Depth dMin(*depthMM.first), dMax(*depthMM.second);
+				if (!ExportDepthDataRaw(strOutFolder+String::FormatString("depth%04u.dmap", image.ID), MAKE_PATH_FULL(strOutFolder, image.name), IDs, depthMap.size(), K, pose.R, pose.C, dMin, dMax, depthMap, normalMap, confMap))
+					return false;
+			}
+		}
+	}
 	return true;
 }
 

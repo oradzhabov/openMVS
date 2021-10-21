@@ -44,7 +44,10 @@ namespace MVS {
 	
 // Forward declarations
 class MVS_API Scene;
-	
+#ifdef _USE_CUDA
+class PatchMatchCUDA;
+#endif // _USE_CUDA
+
 // structure used to compute all depth-maps
 class MVS_API DepthMapsData
 {
@@ -54,7 +57,7 @@ public:
 
 	bool SelectViews(IIndexArr& images, IIndexArr& imagesMap, IIndexArr& neighborsMap);
 	bool SelectViews(DepthData& depthData);
-	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool initDepthMaps);
+	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps);
 	bool InitDepthMap(DepthData& depthData);
 	bool EstimateDepthMap(IIndex idxImage, int nGeometricIter);
 
@@ -80,6 +83,11 @@ public:
 	Image8U::Size prevDepthMapSizeTrg; // ... same for target image
 	DepthEstimator::MapRefArr coords; // map pixel index to zigzag matrix coordinates
 	DepthEstimator::MapRefArr coordsTrg; // ... same for target image
+
+	#ifdef _USE_CUDA
+	// used internally to estimate the depth-maps using CUDA
+	CAutoPtr<PatchMatchCUDA> pmCUDA;
+	#endif // _USE_CUDA
 };
 /*----------------------------------------------------------------*/
 

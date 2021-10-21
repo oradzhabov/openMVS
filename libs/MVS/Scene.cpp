@@ -42,6 +42,11 @@ using namespace MVS;
 #define PROJECT_ID "MVS\0" // identifies the project stream
 #define PROJECT_VER ((uint32_t)1) // identifies the version of a project stream
 
+// uncomment to enable multi-threading based on OpenMP
+#ifdef _USE_OPENMP
+#define SCENE_USE_OPENMP
+#endif
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -56,6 +61,14 @@ void Scene::Release()
 bool Scene::IsEmpty() const
 {
 	return pointcloud.IsEmpty() && mesh.IsEmpty();
+}
+
+bool Scene::ImagesHaveNeighbors() const
+{
+	for (const Image& image: images)
+		if (!image.neighbors.IsEmpty())
+			return true;
+	return false;
 }
 
 
@@ -139,7 +152,7 @@ bool Scene::LoadInterface(const String & fileName)
 		imageData.UpdateCamera(platforms);
 		++nCalibratedImages;
 		nTotalPixels += imageData.width * imageData.height;
-		DEBUG_EXTRA("Image loaded %3u: %s", ID, Util::getFileNameExt(imageData.name).c_str());
+		DEBUG_ULTIMATE("Image loaded %3u: %s", ID, Util::getFileNameExt(imageData.name).c_str());
 	}
 	if (images.GetSize() < 2)
 		return false;
@@ -517,6 +530,52 @@ bool Scene::Save(const String& fileName, ARCHIVE_TYPE type) const
 /*----------------------------------------------------------------*/
 
 
+// compute point-cloud with visibility info from the existing mesh
+void Scene::SampleMeshWithVisibility(unsigned maxResolution)
+{
+	ASSERT(!mesh.IsEmpty());
+	const Depth thFrontDepth(0.985f);
+	pointcloud.Release();
+	pointcloud.points.resize(mesh.vertices.size());
+	pointcloud.pointViews.resize(mesh.vertices.size());
+	#ifdef SCENE_USE_OPENMP
+	#pragma omp parallel for
+	for (int64_t _ID=0; _ID<images.size(); ++_ID) {
+		const IIndex ID(static_cast<IIndex>(_ID));
+	#else
+	FOREACH(ID, images) {
+	#endif
+		const Image& imageData = images[ID];
+		unsigned level(0);
+		const unsigned nMaxResolution(Image8U::computeMaxResolution(imageData.width, imageData.height, level, 0, maxResolution));
+		const REAL scale(imageData.width > imageData.height ? (REAL)nMaxResolution/imageData.width : (REAL)nMaxResolution/imageData.height);
+		const cv::Size scaledSize(Image8U::computeResize(imageData.GetSize(), scale));
+		const Camera camera(imageData.GetCamera(platforms, scaledSize));
+		DepthMap depthMap(scaledSize);
+		mesh.Project(camera, depthMap);
+		FOREACH(idxVertex, mesh.vertices) {
+			const Point3f xz(camera.TransformPointW2I3(Cast<REAL>(mesh.vertices[idxVertex])));
+			if (xz.z <= 0)
+				continue;
+			const Point2f& x(reinterpret_cast<const Point2f&>(xz));
+			if (depthMap.isInsideWithBorder<float,1>(x) && xz.z * thFrontDepth < depthMap(ROUND2INT(x))) {
+				#ifdef SCENE_USE_OPENMP
+				#pragma omp critical
+				#endif
+				pointcloud.pointViews[idxVertex].emplace_back(ID);
+			}
+		}
+	}
+	RFOREACH(idx, pointcloud.points) {
+		if (pointcloud.pointViews[idx].size() < 2)
+			pointcloud.RemovePoint(idx);
+		else
+			pointcloud.points[idx] = mesh.vertices[(Mesh::VIndex)idx];
+	}
+} // SampleMeshWithVisibility
+/*----------------------------------------------------------------*/
+
+
 inline float Footprint(const Camera& camera, const Point3f& X) {
 	#if 0
 	const REAL fSphereRadius(1);
@@ -552,6 +611,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		nMinPointViews = nCalibratedImages;
 	unsigned nPoints = 0;
 	imageData.avgDepth = 0;
+	const float sigmaAngle(-1.f/(2.f*SQUARE(fOptimAngle*1.3f)));
 	FOREACH(idx, pointcloud.points) {
 		const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
 		ASSERT(views.IsSorted());
@@ -572,7 +632,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			const Image& imageData2 = images[view];
 			const Point3f V2(imageData2.camera.C - Cast<REAL>(point));
 			const float fAngle(ACOS(ComputeAngle<float,float>(V1.ptr(), V2.ptr())));
-			const float wAngle(MINF(POW(fAngle/fOptimAngle, 1.5f), 1.f));
+			const float wAngle(fAngle<fOptimAngle ? POW(fAngle/fOptimAngle, 1.5f) : EXP(SQUARE(fAngle-fOptimAngle)*sigmaAngle));
 			const float footprint2(Footprint(imageData2.camera, point));
 			const float fScaleRatio(footprint1/footprint2);
 			float wScale;
@@ -745,7 +805,7 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 //    can load all sub-scene's depth-maps into memory at once
 //  - limit in the same time maximum accumulated images resolution (total number of pixels)
 //    per sub-scene in order to allow all images to be loaded and processed during mesh refinement
-unsigned Scene::Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep) const
+unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) const
 {
 	TD_TIMER_STARTD();
 	// gather samples from all depth-maps
@@ -754,9 +814,9 @@ unsigned Scene::Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep) 
 	typedef TOctree<Samples,float,3> Octree;
 	Octree octree;
 	FloatArr areas(0, images.size()*4192);
-	IIndexArr visibility(0, areas.capacity());
+	IIndexArr visibility(0, (IIndex)areas.capacity());
 	Unsigned32Arr imageAreas(images.size()); {
-		Samples samples(0, areas.capacity());
+		Samples samples(0, (uint32_t)areas.capacity());
 		FOREACH(idxImage, images) {
 			const Image& imageData = images[idxImage];
 			if (!imageData.IsValid())
@@ -765,7 +825,7 @@ unsigned Scene::Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep) 
 			depthData.Load(ComposeDepthFilePath(imageData.ID, "dmap"));
 			if (depthData.IsEmpty())
 				continue;
-			const size_t numPointsBegin(visibility.size());
+			const IIndex numPointsBegin(visibility.size());
 			const Camera camera(imageData.GetCamera(platforms, depthData.depthMap.size()));
 			for (int r=(depthData.depthMap.rows%depthMapStep)/2; r<depthData.depthMap.rows; r+=depthMapStep) {
 				for (int c=(depthData.depthMap.cols%depthMapStep)/2; c<depthData.depthMap.cols; c+=depthMapStep) {
