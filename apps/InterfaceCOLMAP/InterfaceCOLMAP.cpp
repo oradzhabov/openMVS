@@ -127,6 +127,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		// parse command line options
 		boost::program_options::store(boost::program_options::command_line_parser((int)argc, argv).options(cmdline_options).positional(p).run(), OPT::vm);
 		boost::program_options::notify(OPT::vm);
+		Util::ensureValidPath(OPT::strInputFileName);
+		WORKING_FOLDER = (File::isFolder(OPT::strInputFileName) ? OPT::strInputFileName : Util::getFilePath(OPT::strInputFileName));
 		INIT_WORKING_FOLDER;
 		// parse configuration file
 		std::ifstream ifs(MAKE_PATH_SAFE(OPT::strConfigFileName));
@@ -148,7 +150,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	LOG(_T("Command line: ") APPNAME _T("%s"), Util::CommandLineToString(argc, argv).c_str());
 
 	// validate input
-	Util::ensureValidPath(OPT::strInputFileName);
 	const bool bInvalidCommand(OPT::strInputFileName.empty());
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
@@ -281,11 +282,9 @@ struct Camera {
 	};
 
 	bool Read(std::istream& stream, bool binary) {
-		if (binary) {
+		if (binary)
 			return ReadBIN(stream);
-		} else {
-			return ReadTXT(stream);
-		}
+		return ReadTXT(stream);
 	}	
 
 	// Camera list with one line of data per camera:
@@ -297,6 +296,7 @@ struct Camera {
 		in >> ID >> model >> width >> height;
 		if (in.fail())
 			return false;
+		--ID;
 		if (model != _T("PINHOLE"))
 			return false;
 		params.resize(4);
@@ -307,7 +307,6 @@ struct Camera {
 	// See: colmap/src/base/reconstruction.cc
 	// 		void Reconstruction::ReadCamerasBinary(const std::string& path)
 	bool ReadBIN(std::istream& stream) {
-
 		if (stream.peek() == EOF)
 			return false;
 
@@ -317,7 +316,7 @@ struct Camera {
 			parsedNumCameras = true;
 		}
 
-		ID = ReadBinaryLittleEndian<camera_t>(&stream);
+		ID = ReadBinaryLittleEndian<camera_t>(&stream)-1;
 		model = mapCameraModel.at(ReadBinaryLittleEndian<int>(&stream));
 		width = (uint32_t)ReadBinaryLittleEndian<uint64_t>(&stream);
 		height = (uint32_t)ReadBinaryLittleEndian<uint64_t>(&stream);
@@ -361,11 +360,9 @@ struct Image {
 	bool operator < (const Image& rhs) const { return ID < rhs.ID; }
 
 	bool Read(std::istream& stream, bool binary) {
-		if (binary) {
+		if (binary)
 			return ReadBIN(stream); 
-		} else {
-			return ReadTXT(stream); 
-		}
+		return ReadTXT(stream); 
 	}
 
 	// Image list with two lines of data per image:
@@ -381,6 +378,7 @@ struct Image {
 			>> idCamera >> name;
 		if (in.fail())
 			return false;
+		--ID; --idCamera;
 		Util::ensureValidPath(name);
 		if (!NextLine(stream, in, false))
 			return false;
@@ -390,7 +388,7 @@ struct Image {
 			in >> proj.p(0) >> proj.p(1) >> (int&)proj.idPoint;
 			if (in.fail())
 				break;
-			projs.push_back(proj);
+			projs.emplace_back(proj);
 		}
 		return true;
 	}
@@ -398,7 +396,6 @@ struct Image {
 	// See: colmap/src/base/reconstruction.cc
 	// 		void Reconstruction::ReadImagesBinary(const std::string& path)
 	bool ReadBIN(std::istream& stream) {
- 
 		if (stream.peek() == EOF)
 			return false;
 
@@ -408,7 +405,7 @@ struct Image {
 			parsedNumRegImages = true;
 		}
 
-		ID = ReadBinaryLittleEndian<image_t>(&stream);
+		ID = ReadBinaryLittleEndian<image_t>(&stream)-1;
 		q.w() = ReadBinaryLittleEndian<double>(&stream);
 		q.x() = ReadBinaryLittleEndian<double>(&stream);
 		q.y() = ReadBinaryLittleEndian<double>(&stream);
@@ -416,7 +413,7 @@ struct Image {
 		t(0) = ReadBinaryLittleEndian<double>(&stream);
 		t(1) = ReadBinaryLittleEndian<double>(&stream);
 		t(2) = ReadBinaryLittleEndian<double>(&stream);
-		idCamera = ReadBinaryLittleEndian<camera_t>(&stream);
+		idCamera = ReadBinaryLittleEndian<camera_t>(&stream)-1;
 
 		name = "";
 		char nameChar;
@@ -435,7 +432,7 @@ struct Image {
 			proj.p(0) = (float)ReadBinaryLittleEndian<double>(&stream);
 			proj.p(1) = (float)ReadBinaryLittleEndian<double>(&stream);
 			proj.idPoint = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream);
-			projs.push_back(proj);
+			projs.emplace_back(proj);
 		}
 		return true;
 	}
@@ -474,11 +471,9 @@ struct Point {
 	bool operator < (const Image& rhs) const { return ID < rhs.ID; }
 
 	bool Read(std::istream& stream, bool binary) {
-		if (binary) {
+		if (binary)
 			return ReadBIN(stream);
-		} else {
-			return ReadTXT(stream);
-		}
+		return ReadTXT(stream);
 	}
 
 	// 3D point list with one line of data per point:
@@ -497,13 +492,15 @@ struct Point {
 		c.z = CLAMP(r,0,255);
 		if (in.fail())
 			return false;
+		--ID;
 		tracks.clear();
 		while (true) {
 			Track track;
 			in >> track.idImage >> track.idProj;
 			if (in.fail())
 				break;
-			tracks.push_back(track);
+			--track.idImage; --track.idProj;
+			tracks.emplace_back(track);
 		}
 		return !tracks.empty();
 	}
@@ -511,7 +508,6 @@ struct Point {
 	// See: colmap/src/base/reconstruction.cc
 	// 		void Reconstruction::ReadPoints3DBinary(const std::string& path)
 	bool ReadBIN(std::istream& stream) {
-
 		if (stream.peek() == EOF)
 			return false;
 
@@ -522,7 +518,7 @@ struct Point {
 		}
 
 		int r,g,b;
-		ID = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream);
+		ID = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream)-1;
 		p.x = (float)ReadBinaryLittleEndian<double>(&stream);
 		p.y = (float)ReadBinaryLittleEndian<double>(&stream);
 		p.z = (float)ReadBinaryLittleEndian<double>(&stream);
@@ -538,9 +534,9 @@ struct Point {
 		tracks.clear();
 		for (size_t j = 0; j < trackLength; ++j) {
 			Track track;
-			track.idImage = ReadBinaryLittleEndian<image_t>(&stream);
-			track.idProj = ReadBinaryLittleEndian<point2D_t>(&stream);
-			tracks.push_back(track);
+			track.idImage = ReadBinaryLittleEndian<image_t>(&stream)-1;
+			track.idProj = ReadBinaryLittleEndian<point2D_t>(&stream)-1;
+			tracks.emplace_back(track);
     	}
 		return !tracks.empty();
 	}
@@ -626,7 +622,7 @@ bool DetermineInputSource(const String& filenameTXT, const String& filenameBIN, 
 }
 
 
-bool ImportScene(const String& strFolder, Interface& scene)
+bool ImportScene(const String& strFolder, const String& strOutFolder, Interface& scene)
 {
 	COLMAP::DefineCameraModels();
 	// read camera list
@@ -672,8 +668,8 @@ bool ImportScene(const String& strFolder, Interface& scene)
 				camera.width = colmapCamera.width;
 				camera.height = colmapCamera.height;
 			}
-			platform.cameras.push_back(camera);
-			scene.platforms.push_back(platform);
+			platform.cameras.emplace_back(camera);
+			scene.platforms.emplace_back(platform);
 		}
 	}
 	if (mapCameras.empty()) {
@@ -703,14 +699,14 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			EnsureRotationMatrix((Matrix3x3d&)pose.R);
 			Eigen::Map<EVec3d>(&pose.C.x) = -(imageColmap.q.inverse() * imageColmap.t);
 			Interface::Image image;
-			image.name = OPT::strImageFolder+imageColmap.name;
+			image.name = MAKE_PATH_REL(strOutFolder,OPT::strImageFolder+imageColmap.name);
 			image.platformID = mapCameras.at(imageColmap.idCamera);
 			image.cameraID = 0;
 			image.ID = imageColmap.ID;
 			Interface::Platform& platform = scene.platforms[image.platformID];
 			image.poseID = (uint32_t)platform.poses.size();
-			platform.poses.push_back(pose);
-			scene.images.push_back(image);
+			platform.poses.emplace_back(pose);
+			scene.images.emplace_back(image);
 		}
 	}
 
@@ -727,7 +723,7 @@ bool ImportScene(const String& strFolder, Interface& scene)
 		if (!DetermineInputSource(filenamePointsTXT, filenamePointsBIN, file, filenamePoints, binary)) {
 			return false;
 		}
-		LOG_OUT() << "Reading images: " << filenamePoints << std::endl;
+		LOG_OUT() << "Reading points: " << filenamePoints << std::endl;
 
 		COLMAP::Point point;
 		while (file.good() && point.Read(file, binary)) {
@@ -919,11 +915,11 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 				cam.width = ptrImage->GetWidth();
 				cam.height = ptrImage->GetHeight();
 				// unnormalize camera intrinsics
-				const double scale(MVS::Camera::GetNormalizationScale(cam.width, cam.height));
-				cam.params[0] = camera.K(0,0) * scale;
-				cam.params[1] = camera.K(1,1) * scale;
-				cam.params[2] = camera.K(0,2) * scale;
-				cam.params[3] = camera.K(1,2) * scale;
+				const Interface::Mat33d K(platform.GetFullK(0, cam.width, cam.height));
+				cam.params[0] = K(0,0);
+				cam.params[1] = K(1,1);
+				cam.params[2] = K(0,2);
+				cam.params[3] = K(1,2);
 			} else {
 				cam.width = camera.width;
 				cam.height = camera.height;
@@ -999,15 +995,12 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 				point.p = vertex.X;
 				for (const Interface::Vertex::View& view: vertex.views) {
 					COLMAP::Image& img = images[view.imageID];
-					COLMAP::Point::Track track;
-					track.idImage = view.imageID;
-					track.idProj = (uint32_t)img.projs.size();
-					point.tracks.push_back(track);
+					point.tracks.emplace_back(COLMAP::Point::Track{view.imageID, (uint32_t)img.projs.size()});
 					COLMAP::Image::Proj proj;
 					proj.idPoint = ID;
 					const Point3 X(vertex.X);
 					ProjectVertex_3x4_3_2(cameras[view.imageID].P.val, X.ptr(), proj.p.data());
-					img.projs.push_back(proj);
+					img.projs.emplace_back(proj);
 				}
 				point.c = scene.verticesColor.empty() ? Interface::Col3(255,255,255) : scene.verticesColor[ID].c;
 				point.e = 0;
@@ -1245,10 +1238,11 @@ int main(int argc, LPCTSTR* argv)
 	} else {
 		// read COLMAP input data
 		Interface scene;
-		if (!ImportScene(MAKE_PATH_SAFE(OPT::strInputFileName), scene))
+		const String strOutFolder(Util::getFilePath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputFileName)));
+		if (!ImportScene(MAKE_PATH_SAFE(OPT::strInputFileName), strOutFolder, scene))
 			return EXIT_FAILURE;
 		// write MVS input data
-		Util::ensureFolder(Util::getFullPath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputFileName)));
+		Util::ensureFolder(strOutFolder);
 		if (!ARCHIVE::SerializeSave(scene, MAKE_PATH_SAFE(OPT::strOutputFileName)))
 			return EXIT_FAILURE;
 		VERBOSE("Exported data: %u images & %u vertices (%s)", scene.images.size(), scene.vertices.size(), TD_TIMER_GET_FMT().c_str());
