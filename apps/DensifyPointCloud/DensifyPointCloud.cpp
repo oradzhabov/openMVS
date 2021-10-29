@@ -94,9 +94,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	unsigned nCUDADevice;
 	#endif
 	unsigned nResolutionLevel;
-#ifdef _USE_CUDA
-	unsigned nCUDADevice;
-#endif
 	unsigned nMaxResolution;
 	unsigned nMinResolution;
 	unsigned nNumViews;
@@ -113,9 +110,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("cuda-device", boost::program_options::value(&nCUDADevice)->default_value(0), "CUDA device number to be used for depth-map estimation (-1 - CPU processing)")
 		#endif
 		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
-#ifdef _USE_CUDA
-		("cuda-device", boost::program_options::value(&nCUDADevice)->default_value(0), "CUDA device number to be used for depth-map estimation (-1 - CPU processing)")
-#endif
 		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(3200), "do not scale images higher than this resolution")
 		("min-resolution", boost::program_options::value(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("number-views", boost::program_options::value(&nNumViews)->default_value(5), "number of views used for depth-map estimation (0 - all neighbor views available)")
