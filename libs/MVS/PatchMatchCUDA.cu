@@ -516,8 +516,8 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		newPlane.w() = depths[i];
 		MultiViewScorePlane(images, depthImages, cameras, p, newPlane, costVector, params);
 		const float costPlane = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews) / NUM_SAMPLES;
-		if (cost > costPlane) {
-			cost = costPlane;
+		if (costs[idx] > costPlane) {
+			costs[idx] = costPlane;
 			plane = newPlane;
 		}
 	}
