@@ -368,6 +368,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	int height = cameras[0].height;
 	if (p.x() >= width || p.y() >= height)
 		return;
+
 	const int idx = Point2Idx(p, width);
 	RandState* randState = &randStates[idx];
 	Point4& plane = planes[idx];
@@ -516,8 +517,8 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		newPlane.w() = depths[i];
 		MultiViewScorePlane(images, depthImages, cameras, p, newPlane, costVector, params);
 		const float costPlane = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews) / NUM_SAMPLES;
-		if (costs[idx] > costPlane) {
-			costs[idx] = costPlane;
+		if (cost > costPlane) {
+			cost = costPlane;
 			plane = newPlane;
 		}
 	}
@@ -531,6 +532,7 @@ __global__ void InitializeScore(const cudaTextureObject_t* images, const cudaTex
 	const int height = cameras[0].height;
 	if (p.x() >= width || p.y() >= height)
 		return;
+
 	const int idx = Point2Idx(p, width);
 	// initialize estimate randomly if not set
 	RandState* randState = &randStates[idx];
