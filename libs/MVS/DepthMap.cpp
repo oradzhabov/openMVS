@@ -1128,17 +1128,6 @@ bool MVS::TriangulatePoints2DepthMap(
 			projs[face[1]],
 			projs[face[2]], rasterer);
 	}
-
-	for (int i = 0; i < image.pImageData->width; i++){
-		for (int j = 0; j < image.pImageData->height; j++){
-			const int idx = i * image.pImageData->height + j;
-			if (image.pImageData->image[idx] == Pixel8U::BLACK){
-				depthMap[idx] = 0;
-				normalMap[idx] = Normal(0, 0, 0);
-			}
-		}
-	}
-
 	return true;
 } // TriangulatePoints2DepthMap
 // same as above, but does not estimate the normal-map
