@@ -373,7 +373,7 @@ bool Scene::LoadDMAP(const String& fileName)
 	image.image = imageDepth;
 	cv::resize(image.image, image.image, imageSize);
 
-	DEBUG_EXTRA("Scene loaded from depth-map format - %dx%d size, %.2f%% coverage (%s):\n"
+	DEBUG_EXTRA("Scene loaded from depth-map format - %dx%d size, %.2f%%%% coverage (%s):\n"
 		"\t1 images (1 calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
 		"\t%u points, 0 lines",
 		depthMap.width(), depthMap.height(), 100.0*pointcloud.GetSize()/depthMap.area(), TD_TIMER_GET_FMT().c_str(),
@@ -381,6 +381,54 @@ bool Scene::LoadDMAP(const String& fileName)
 		pointcloud.GetSize());
 	return true;
 } // LoadDMAP
+/*----------------------------------------------------------------*/
+
+// load a text list of views and their neighbors and assign them to the scene images;
+// each line store the view ID followed by the 3+ closest view IDs, ordered in decreasing overlap:
+//
+// <cam-id> <neighbor-cam-id-0> <neighbor-cam-id-1> <neighbor-cam-id-2> <...>
+// 
+// for example:
+// 0 1 2 3 4
+// 1 0 2 3 4
+// 2 1 3 0 4
+// ...
+bool Scene::LoadViewNeighbors(const String& fileName)
+{
+	TD_TIMER_STARTD();
+
+	// parse image list
+	SML smlImages(_T("ImageNeighbors"));
+	smlImages.Load(fileName);
+	const LPSMLARR&	arrSmlChild = smlImages.GetArrChildren();
+	ASSERT(arrSmlChild.size() <= 1);
+
+	// fetch image IDs list
+	size_t argc;
+	for (SML::const_iterator it=smlImages.begin(); it!=smlImages.end(); ++it) {
+		// parse image element
+		CAutoPtrArr<LPSTR> argv(Util::CommandLineToArgvA(it->second.val, argc));
+		if (argc > 0 && argv[0][0] == _T('#'))
+			continue;
+		if (argc < 2) {
+			VERBOSE("Invalid image IDs list: %s", it->second.val.c_str());
+			continue;
+		}
+		// add neighbors to this image
+		const IIndex ID(String::FromString<IIndex>(argv[0], NO_ID));
+		ASSERT(ID != NO_ID);
+		Image& imageData = images[ID];
+		imageData.neighbors.resize(argc-1);
+		FOREACH(i, imageData.neighbors) {
+			const IIndex nID(String::FromString<IIndex>(argv[i+1], NO_ID));
+			ASSERT(nID != NO_ID);
+			imageData.neighbors[i] = ViewScore{ViewInfo{nID, 0, 1.f, FD2R(15.f), 0.5f}, 3.f};
+		}
+	}
+
+	DEBUG_EXTRA("View neighbors list loaded (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+} // LoadViewNeighbors
 /*----------------------------------------------------------------*/
 
 // try to load known point-cloud or mesh files
@@ -923,13 +971,20 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 	if (chunks.size() < 2)
 		return 0;
 	// remove images with very little contribution
-	const float minImageContributionRatio(0.25f);
+	const float minImageContributionRatio(0.3f);
 	FOREACH(c, chunks) {
 		ImagesChunk& chunk = chunks[c];
 		const Unsigned32Arr& chunkImageAreas = chunkInserter.imagesAreas[c];
+		float maxAreaRatio = 0;
+		for (const IIndex idxImage : chunk.images) {
+			const float areaRatio(static_cast<float>(chunkImageAreas[idxImage])/static_cast<float>(imageAreas[idxImage]));
+			if (maxAreaRatio < areaRatio)
+				maxAreaRatio = areaRatio;
+		}
+		const float minImageContributionRatioChunk(maxAreaRatio * minImageContributionRatio);
 		for (auto it = chunk.images.begin(); it != chunk.images.end(); ) {
 			const IIndex idxImage(*it);
-			if (float(chunkImageAreas[idxImage])/float(imageAreas[idxImage]) < minImageContributionRatio)
+			if (static_cast<float>(chunkImageAreas[idxImage])/static_cast<float>(imageAreas[idxImage]) < minImageContributionRatioChunk)
 				it = chunk.images.erase(it);
 			else
 				++it;
@@ -949,7 +1004,7 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 			for (auto it = chunkSmall.images.begin(); it != chunkSmall.images.end(); ) {
 				const IIndex idxImage(*it);
 				if (chunkSmallImageAreas[idxImage] < chunkLargeImageAreas[idxImage] &&
-					float(chunkLargeImageAreas[idxImage])/float(imageAreas[idxImage]) > minImageContributionRatioLargerChunk)
+					static_cast<float>(chunkLargeImageAreas[idxImage])/static_cast<float>(imageAreas[idxImage]) > minImageContributionRatioLargerChunk)
 					it = chunkSmall.images.erase(it);
 				else
 					++it;

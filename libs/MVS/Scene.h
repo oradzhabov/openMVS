@@ -69,11 +69,13 @@ public:
 	void Release();
 	bool IsEmpty() const;
 	bool ImagesHaveNeighbors() const;
+	bool IsBounded() const { return obb.IsValid(); }
 
 	bool LoadInterface(const String& fileName);
 	bool SaveInterface(const String& fileName, int version=-1) const;
 
 	bool LoadDMAP(const String& fileName);
+	bool LoadViewNeighbors(const String& fileName);
 	bool Import(const String& fileName);
 
 	bool Load(const String& fileName, bool bImport=false);

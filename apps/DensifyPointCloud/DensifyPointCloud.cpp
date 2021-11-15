@@ -48,6 +48,7 @@ namespace {
 namespace OPT {
 String strInputFileName;
 String strOutputFileName;
+String strViewNeighborsFileName;
 String strMeshFileName;
 String strDenseConfigFileName;
 float fMaxSubsceneArea;
@@ -106,6 +107,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the dense point-cloud")
+		("view-neighbors-file", boost::program_options::value<std::string>(&OPT::strViewNeighborsFileName), "input filename containing the list of views and their neighbors (optional)")
 		#ifdef _USE_CUDA
 		("cuda-device", boost::program_options::value(&nCUDADevice)->default_value(0), "CUDA device number to be used for depth-map estimation (-1 - CPU processing)")
 		#endif
@@ -129,6 +131,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// in config file, but will not be shown to the user
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
+		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name used for image pair overlap estimation")
 		("dense-config-file", boost::program_options::value<std::string>(&OPT::strDenseConfigFileName), "optional configuration file for the densifier (overwritten by the command line options)")
 		;
 
@@ -167,23 +170,23 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
-	Util::ensureUnifySlash(OPT::strInputFileName);
-	if (OPT::vm.count("help") || OPT::strInputFileName.IsEmpty()) {
+	if (OPT::vm.count("help") || OPT::strInputFileName.empty()) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
 		GET_LOG() << visible;
 	}
-	if (OPT::strInputFileName.IsEmpty())
+	if (OPT::strInputFileName.empty())
 		return false;
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
-	Util::ensureUnifySlash(OPT::strOutputFileName);
-	if (OPT::strOutputFileName.IsEmpty())
+	Util::ensureValidPath(OPT::strViewNeighborsFileName);
+	Util::ensureValidPath(OPT::strMeshFileName);
+	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_dense.mvs");
 
 	// init dense options
-	if (!OPT::strDenseConfigFileName.IsEmpty())
+	if (!OPT::strDenseConfigFileName.empty())
 		OPT::strDenseConfigFileName = MAKE_PATH_SAFE(OPT::strDenseConfigFileName);
 	OPTDENSE::init();
 	const bool bValidConfig(OPTDENSE::oConfig.Load(OPT::strDenseConfigFileName));
@@ -203,7 +206,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
 	OPTDENSE::nIgnoreMaskLabel = nIgnoreMaskLabel;
 	OPTDENSE::nEstimationGeometricIters = nEstimationGeometricIters;
-	if (!bValidConfig && !OPT::strDenseConfigFileName.IsEmpty())
+	if (!bValidConfig && !OPT::strDenseConfigFileName.empty())
 		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
 
 	// initialize global options
@@ -266,7 +269,9 @@ int main(int argc, LPCTSTR* argv)
 	// load and estimate a dense point-cloud
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;
-	if (scene.pointcloud.IsEmpty()) {
+	if (!OPT::strMeshFileName.empty())
+		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
+	if (scene.pointcloud.IsEmpty() && OPT::strViewNeighborsFileName.empty() && scene.mesh.IsEmpty()) {
 		VERBOSE("error: empty initial point-cloud");
 		return EXIT_FAILURE;
 	}
@@ -295,6 +300,8 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_SUCCESS;
 	}
 	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS) {
+		if (!OPT::strViewNeighborsFileName.empty())
+			scene.LoadViewNeighbors(MAKE_PATH_SAFE(OPT::strViewNeighborsFileName));
 		TD_TIMER_START();
 		if (!scene.DenseReconstruction(OPT::nFusionMode)) {
 			if (ABS(OPT::nFusionMode) != 1)
@@ -306,7 +313,7 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 
-	// save the final mesh
+	// save the final point-cloud
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
 	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 	scene.pointcloud.Save(baseFileName+_T(".ply"));
