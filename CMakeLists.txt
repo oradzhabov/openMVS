@@ -138,6 +138,13 @@ if(OpenMVS_USE_CUDA)
 		INCLUDE_DIRECTORIES(${CUDA_INCLUDE_DIRS})
 		LIST(APPEND OpenMVS_DEFINITIONS -D_USE_CUDA)
 		SET(_USE_CUDA TRUE)
+
+		if(MSVC)
+			# Fix: https://github.com/microsoft/STL/issues/2020
+			if(USE_CUDA)
+				set(CMAKE_CXX_STANDARD 17)
+			endif()
+		endif()
 	else()
 		SET(CUDA_CUDA_LIBRARY "")
 		MESSAGE("-- Can't find CUDA. Continuing without it.")
