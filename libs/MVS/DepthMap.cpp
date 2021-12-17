@@ -69,9 +69,7 @@ namespace MVS {
 DEFOPT_SPACE(OPTDENSE, _T("Dense"))
 
 
-#ifdef _USE_CUDA
 DEFVAR_OPTDENSE_int32(nCUDADevice, "CUDA Device", "CUDA device number to be used for depth-map estimation (-1 - CPU processing)", "0")
-#endif // _USE_CUDA
 DEFVAR_OPTDENSE_uint32(nResolutionLevel, "Resolution Level", "How many times to scale down the images before dense reconstruction", "1")
 MDEFVAR_OPTDENSE_uint32(nMaxResolution, "Max Resolution", "Do not scale images lower than this resolution", "3200")
 MDEFVAR_OPTDENSE_uint32(nMinResolution, "Min Resolution", "Do not scale images lower than this resolution", "640")
