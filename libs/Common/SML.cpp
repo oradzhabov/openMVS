@@ -362,7 +362,7 @@ const SMLVALUE* SML::GetValue(const String& key) const
 
 
 /**
- * Insert or retrieve an item; initializa it if necesary
+ * Insert or retrieve an item; initialize it if necessary
  */
 SMLVALUE& SML::GetValue(const String& key)
 {
@@ -371,6 +371,18 @@ SMLVALUE& SML::GetValue(const String& key)
 	if (!bExisted && m_fncInitItem != NULL)
 		m_fncInitItem(key, val, m_fncItemData);
 	return val;
+}
+/*----------------------------------------------------------------*/
+
+
+/**
+ * Retrieve an unnamed item by index
+ */
+const SMLVALUE& SML::GetValue(IDX idx) const
+{
+	ASSERT(idx < this->size());
+	const String szName(_T("Item") + String::ToString(idx));
+	return this->at(szName);
 }
 /*----------------------------------------------------------------*/
 

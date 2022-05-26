@@ -98,6 +98,7 @@ extern unsigned nMinViewsFilter;
 extern unsigned nMinViewsFilterAdjust;
 extern unsigned nMinViewsTrustPoint;
 extern unsigned nNumViews;
+extern unsigned nPointInsideROI;
 extern bool bFilterAdjust;
 extern bool bAddCorners;
 extern float fViewMinScore;
@@ -240,7 +241,7 @@ struct MVS_API DepthData {
 	void ApplyIgnoreMask(const BitMatrix&);
 
 	bool Save(const String& fileName) const;
-	bool Load(const String& fileName);
+	bool Load(const String& fileName, unsigned flags=7);
 
 	unsigned GetRef();
 	unsigned IncRef(const String& fileName);

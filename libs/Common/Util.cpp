@@ -22,6 +22,11 @@
 #endif
 #include <pwd.h>
 #endif
+#ifdef _SUPPORT_CPP17
+#if !defined(__GNUC__) || (__GNUC__ > 7)
+#include <filesystem>
+#endif
+#endif // _SUPPORT_CPP17
 
 using namespace SEACAVE;
 
@@ -432,6 +437,21 @@ String Util::GetOSInfo()
 }
 /*----------------------------------------------------------------*/
 
+String Util::GetDiskInfo(const String& path)
+{
+	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
+
+	const std::filesystem::space_info si = std::filesystem::space(path.c_str());
+	return String::FormatString("%s (%s) space", formatBytes(si.available).c_str(), formatBytes(si.capacity).c_str());
+
+	#else
+
+	return String();
+
+	#endif // _SUPPORT_CPP17
+}
+/*----------------------------------------------------------------*/
+
 
 // Initialize various global variables (ex: random-number-generator state).
 void Util::Init()
@@ -660,6 +680,9 @@ void Util::LogBuild()
 	LOG(_T("CPU: %s (%u cores)"), Util::GetCPUInfo().c_str(), Thread::hardwareConcurrency());
 	LOG((_T("RAM: ") + Util::GetRAMInfo()).c_str());
 	LOG((_T("OS: ") + Util::GetOSInfo()).c_str());
+	#ifdef _SUPPORT_CPP17
+	LOG((_T("Disk: ") + Util::GetDiskInfo(WORKING_FOLDER_FULL)).c_str());
+	#endif
 	if (!SIMD_ENABLED.isSet(Util::SSE)) LOG(_T("warning: no SSE compatible CPU or OS detected"));
 	else if (!SIMD_ENABLED.isSet(Util::AVX)) LOG(_T("warning: no AVX compatible CPU or OS detected"));
 	else LOG(_T("SSE & AVX compatible CPU & OS detected"));

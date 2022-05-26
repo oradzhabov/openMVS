@@ -276,7 +276,7 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 	const IIndex idxImage((IIndex)(&depthData-arrDepthData.Begin()));
 	ASSERT(depthData.neighbors.IsEmpty());
 	if (scene.images[idxImage].neighbors.empty() &&
-		!scene.SelectNeighborViews(idxImage, depthData.points, OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, FD2R(OPTDENSE::fOptimAngle)))
+		!scene.SelectNeighborViews(idxImage, depthData.points, OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, FD2R(OPTDENSE::fOptimAngle), OPTDENSE::nPointInsideROI))
 		return false;
 	depthData.neighbors.CopyOf(scene.images[idxImage].neighbors);
 
@@ -331,7 +331,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		DEBUG_EXTRA("Reference image %3u paired with image %3u", idxImage, neighbor.idx.ID);
 	} else {
 		// initialize all neighbor views too (global reconstruction is used)
-		const float fMinScore(MAXF(depthData.neighbors.First().score*(OPTDENSE::fViewMinScoreRatio*0.1f), OPTDENSE::fViewMinScore));
+		const float fMinScore(MAXF(depthData.neighbors.First().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
 		FOREACH(idx, depthData.neighbors) {
 			const ViewScore& neighbor = depthData.neighbors[idx];
 			if ((numNeighbors && depthData.images.GetSize() > numNeighbors) ||
@@ -592,7 +592,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 
 	// initialize
 	DepthData& depthData(arrDepthData[idxImage]);
-	ASSERT(depthData.images.GetSize() > 1 && !depthData.points.IsEmpty());
+	ASSERT(depthData.images.size() > 1);
 	const DepthData::ViewData& image(depthData.images.First());
 	ASSERT(!image.image.empty() && !depthData.images[1].image.empty());
 	const Image8U::Size size(image.image.size());
@@ -1537,7 +1537,7 @@ DenseDepthMapData::DenseDepthMapData(Scene& _scene, int _nFusionMode)
 	if (nFusionMode < 0) {
 		STEREO::SemiGlobalMatcher::CreateThreads(scene.nMaxThreads);
 		if (nFusionMode == -1)
-			OPTDENSE::nOptimize &= ~OPTDENSE::OPTIMIZE;
+			OPTDENSE::nOptimize = 0;
 	}
 }
 DenseDepthMapData::~DenseDepthMapData()
@@ -1624,7 +1624,7 @@ bool Scene::DenseReconstruction(int nFusionMode)
 bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 {
 	// compute point-cloud from the existing mesh
-	if (pointcloud.IsEmpty() && !mesh.IsEmpty() && !ImagesHaveNeighbors()) {
+	if (!mesh.IsEmpty() && !ImagesHaveNeighbors()) {
 		SampleMeshWithVisibility();
 		mesh.Release();
 	}
@@ -1735,15 +1735,18 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 
 	#ifdef _USE_CUDA
 	// initialize CUDA
-	if (OPTDENSE::nCUDADevice >= 0) {
-		data.depthMaps.pmCUDA = new PatchMatchCUDA(OPTDENSE::nCUDADevice);
-		data.depthMaps.pmCUDA->Init(false);
+	if (CUDA::desiredDeviceID >= -1 && data.nFusionMode >= 0) {
+		data.depthMaps.pmCUDA = new PatchMatchCUDA(CUDA::desiredDeviceID);
+		if (CUDA::devices.IsEmpty())
+			data.depthMaps.pmCUDA.Release();
+		else
+			data.depthMaps.pmCUDA->Init(false);
 	}
 	#endif // _USE_CUDA
 
 	// initialize the queue of images to be processed
 	const int nOptimize(OPTDENSE::nOptimize);
-	if (OPTDENSE::nEstimationGeometricIters)
+	if (OPTDENSE::nEstimationGeometricIters && data.nFusionMode >= 0)
 		OPTDENSE::nOptimize = 0;
 	data.idxImage = 0;
 	ASSERT(data.events.IsEmpty());
@@ -1767,50 +1770,51 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		return false;
 	data.progress.Release();
 
-
-	#ifdef _USE_CUDA
-	// initialize CUDA
-	if (OPTDENSE::nCUDADevice >= 0 && OPTDENSE::nEstimationGeometricIters) {
-		data.depthMaps.pmCUDA->Release();
-		data.depthMaps.pmCUDA->Init(true);
-	}
-	#endif // _USE_CUDA
-	while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
-		// initialize the queue of images to be geometric processed
-		if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
-			OPTDENSE::nOptimize = nOptimize;
-		data.idxImage = 0;
-		ASSERT(data.events.IsEmpty());
-		data.events.AddEvent(new EVTProcessImage(0));
-		// start working threads
-		data.progress = new Util::Progress("Geometric-consistent estimated depth-maps", data.images.GetSize());
-		GET_LOGCONSOLE().Pause();
-		if (nMaxThreads > 1) {
-			// multi-thread execution
-			cList<SEACAVE::Thread> threads(2);
-			FOREACHPTR(pThread, threads)
-				pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
-			FOREACHPTR(pThread, threads)
-				pThread->join();
-		} else {
-			// single-thread execution
-			DenseReconstructionEstimate((void*)&data);
+	if (data.nFusionMode >= 0) {
+		#ifdef _USE_CUDA
+		// initialize CUDA
+		if (data.depthMaps.pmCUDA && OPTDENSE::nEstimationGeometricIters) {
+			data.depthMaps.pmCUDA->Release();
+			data.depthMaps.pmCUDA->Init(true);
 		}
-		GET_LOGCONSOLE().Play();
-		if (!data.events.IsEmpty())
-			return false;
-		data.progress.Release();
-		// replace raw depth-maps with the geometric-consistent ones
-		for (IIndex idx: data.images) {
-			const DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-			if (!depthData.IsValid())
-				continue;
-			const String rawName(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
-			File::deleteFile(rawName);
-			File::renameFile(ComposeDepthFilePath(depthData.GetView().GetID(), "geo.dmap"), rawName);
+		#endif // _USE_CUDA
+		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
+			// initialize the queue of images to be geometric processed
+			if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
+				OPTDENSE::nOptimize = nOptimize;
+			data.idxImage = 0;
+			ASSERT(data.events.IsEmpty());
+			data.events.AddEvent(new EVTProcessImage(0));
+			// start working threads
+			data.progress = new Util::Progress("Geometric-consistent estimated depth-maps", data.images.GetSize());
+			GET_LOGCONSOLE().Pause();
+			if (nMaxThreads > 1) {
+				// multi-thread execution
+				cList<SEACAVE::Thread> threads(2);
+				FOREACHPTR(pThread, threads)
+					pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
+				FOREACHPTR(pThread, threads)
+					pThread->join();
+			} else {
+				// single-thread execution
+				DenseReconstructionEstimate((void*)&data);
+			}
+			GET_LOGCONSOLE().Play();
+			if (!data.events.IsEmpty())
+				return false;
+			data.progress.Release();
+			// replace raw depth-maps with the geometric-consistent ones
+			for (IIndex idx: data.images) {
+				const DepthData& depthData(data.depthMaps.arrDepthData[idx]);
+				if (!depthData.IsValid())
+					continue;
+				const String rawName(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
+				File::deleteFile(rawName);
+				File::renameFile(ComposeDepthFilePath(depthData.GetView().GetID(), "geo.dmap"), rawName);
+			}
 		}
+		data.nEstimationGeometricIter = -1;
 	}
-	data.nEstimationGeometricIter = -1;
 
 	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_FILTER) != 0) {
 		// initialize the queue of depth-maps to be filtered
@@ -1867,7 +1871,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			// select views to reconstruct the depth-map for this image
 			const IIndex idx = data.images[evtImage.idxImage];
 			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-			const bool depthmapComputed(data.nFusionMode >= 0 && data.nEstimationGeometricIter < 0 && File::access(ComposeDepthFilePath(data.scene.images[idx].ID, "dmap")));
+			const bool depthmapComputed(data.nFusionMode < 0 || (data.nFusionMode >= 0 && data.nEstimationGeometricIter < 0 && File::access(ComposeDepthFilePath(data.scene.images[idx].ID, "dmap"))));
 			// initialize images pair: reference image and the best neighbor view
 			ASSERT(data.neighborsMap.IsEmpty() || data.neighborsMap[evtImage.idxImage] != NO_ID);
 			if (!data.depthMaps.InitViews(depthData, data.neighborsMap.IsEmpty()?NO_ID:data.neighborsMap[evtImage.idxImage], OPTDENSE::nNumViews, !depthmapComputed, depthmapComputed ? -1 : (data.nEstimationGeometricIter >= 0 ? 1 : 0))) {
@@ -1876,7 +1880,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				break;
 			}
 			// try to load already compute depth-map for this image
-			if (depthmapComputed) {
+			if (depthmapComputed && data.nFusionMode >= 0) {
 				if (OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) {
 					if (!depthData.Load(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"))) {
 						VERBOSE("error: invalid depth-map '%s'", ComposeDepthFilePath(depthData.GetView().GetID(), "dmap").c_str());

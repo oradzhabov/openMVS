@@ -56,6 +56,7 @@ String strOutputFileName;
 String strMeshFileName;
 bool bMeshExport;
 float fDistInsert;
+bool bUseOnlyROI;
 bool bUseConstantWeight;
 bool bUseFreeSpaceSupport;
 float fThicknessFactor;
@@ -66,10 +67,12 @@ float fRemoveSpurious;
 bool bRemoveSpikes;
 unsigned nCloseHoles;
 unsigned nSmoothMesh;
+float fEdgeLength;
 float fSplitMaxArea;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
+String strImagePointsFileName;
 String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
@@ -101,6 +104,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			#endif
 			), "verbosity level")
 		#endif
+		#ifdef _USE_CUDA
+		("cuda-device", boost::program_options::value(&CUDA::desiredDeviceID)->default_value(-1), "CUDA device number to be used to reconstruct the mesh (-2 - CPU processing, -1 - best GPU, >=0 - device index)")
+		#endif
 		;
 
 	// group of options allowed both on command line and in config file
@@ -109,6 +115,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("min-point-distance,d", boost::program_options::value(&OPT::fDistInsert)->default_value(2.5f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating (0 - disabled)")
+		("integrate-only-roi", boost::program_options::value(&OPT::bUseOnlyROI)->default_value(false), "use only the points inside the ROI")
 		("constant-weight", boost::program_options::value(&OPT::bUseConstantWeight)->default_value(true), "considers all view weights 1 instead of the available weight")
 		("free-space-support,f", boost::program_options::value(&OPT::bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
 		("thickness-factor", boost::program_options::value(&OPT::fThicknessFactor)->default_value(1.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
@@ -122,6 +129,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("remove-spikes", boost::program_options::value(&OPT::bRemoveSpikes)->default_value(true), "flag controlling the removal of spike faces")
 		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the reconstructed surface (0 - disabled)")
 		("smooth", boost::program_options::value(&OPT::nSmoothMesh)->default_value(2), "number of iterations to smooth the reconstructed surface (0 - disabled)")
+		("edge-length", boost::program_options::value(&OPT::fEdgeLength)->default_value(0.f), "remesh such that the average edge length is this size (0 - disabled)")
 		;
 
 	// hidden options, allowed both on command line and
@@ -131,6 +139,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to clean (skips the reconstruction step)")
 		("mesh-export", boost::program_options::value(&OPT::bMeshExport)->default_value(false), "just export the mesh contained in loaded project")
 		("split-max-area", boost::program_options::value(&OPT::fSplitMaxArea)->default_value(0.f), "maximum surface area that a sub-mesh can contain (0 - disabled)")
+		("image-points-file", boost::program_options::value<std::string>(&OPT::strImagePointsFileName), "input filename containing the list of points from an image to project on the mesh (optional)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -164,7 +173,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// print application details: version and command line
 	Util::LogBuild();
-	LOG(_T("Command line:%s"), Util::CommandLineToString(argc, argv).c_str());
+	LOG(_T("Command line: ") APPNAME _T("%s"), Util::CommandLineToString(argc, argv).c_str());
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
@@ -181,6 +190,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
+	Util::ensureValidPath(OPT::strImagePointsFileName);
 	if (OPT::strOutputFileName.IsEmpty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_mesh.mvs");
 
@@ -215,6 +225,110 @@ void Finalize()
 
 } // unnamed namespace
 
+
+// export 3D coordinates corresponding to 2D coordinates provided by inputFileName:
+// parse image point list; first line is the name of the image to project,
+// each consequent line store the xy coordinates to project:
+// <image-name> <number-of-points>
+// <x-coord1> <y-coord1>
+// <x-coord2> <y-coord2>
+// ...
+// 
+// for example:
+// N01.JPG 3
+// 3090 2680
+// 3600 2100
+// 3640 2190
+bool Export3DProjections(Scene& scene, const String& inputFileName) {
+	SML smlPointList(_T("ImagePoints"));
+	smlPointList.Load(inputFileName);
+	const LPSMLARR& arrSmlChild = smlPointList.GetArrChildren();
+	ASSERT(arrSmlChild.size() <= 1);
+	IDX idx(0);
+
+	// read image name
+	size_t argc;
+	CAutoPtrArr<LPSTR> argv;
+	while (true) {
+		argv = Util::CommandLineToArgvA(smlPointList.GetValue(idx).val, argc);
+		if (argc > 0 && argv[0][0] != _T('#'))
+			break;
+		if (++idx == smlPointList.size())
+			return false;
+	}
+	if (argc < 2)
+		return false;
+	String imgName(argv[0]);
+	IIndex imgID(NO_ID);
+	for (const Image& imageData : scene.images) {
+		if (!imageData.IsValid())
+			continue;
+		if (imageData.name.substr(imageData.name.size() - imgName.size()) == imgName) {
+			imgID = imageData.ID;
+			break;
+		}
+	}
+	if (imgID == NO_ID) {
+		VERBOSE("Unable to find image named: %s", imgName.c_str());
+		return false;
+	}
+
+	// read image points
+	std::vector<Point2f> imagePoints;
+	while (++idx != smlPointList.size()) {
+		// parse image element
+		const String& line(smlPointList.GetValue(idx).val);
+		argv = Util::CommandLineToArgvA(line, argc);
+		if (argc > 0 && argv[0][0] == _T('#'))
+			continue;
+		if (argc < 2) {
+			VERBOSE("Invalid image coordinates: %s", line.c_str());
+			continue;
+		}
+		const Point2f pt(
+			String::FromString<float>(argv[0], -1),
+			String::FromString<float>(argv[1], -1));
+		if (pt.x > 0 && pt.y > 0)
+			imagePoints.emplace_back(pt);
+	}
+	if (imagePoints.empty()) {
+		VERBOSE("Unable to read image points from: %s", imgName.c_str());
+		return false;
+	}
+
+	// prepare output file
+	String outFileName(Util::insertBeforeFileExt(inputFileName, "_3D"));
+	File oStream(outFileName, File::WRITE, File::CREATE | File::TRUNCATE);
+	if (!oStream.isOpen()) {
+		VERBOSE("Unable to open output file: %s", outFileName.c_str());
+		return false;
+	}
+
+	// print image name
+	oStream.print("%s %u\n", imgName.c_str(), imagePoints.size());
+
+	// init mesh octree
+	const Mesh::Octree octree(scene.mesh.vertices, [](Mesh::Octree::IDX_TYPE size, Mesh::Octree::Type /*radius*/) {
+		return size > 256;
+	});
+	scene.mesh.ListIncidenteFaces();
+
+	// save 3D coord in the output file
+	const Image& imgToExport = scene.images[imgID];
+	for (const Point2f& pt : imagePoints) {
+		// define ray from camera center to each x,y image coord
+		const Ray3 ray(imgToExport.camera.C, normalized(imgToExport.camera.RayPoint<REAL>(pt)));
+		// find ray intersection with the mesh
+		const IntersectRayMesh intRay(octree, ray, scene.mesh);
+		if (intRay.pick.IsValid()) {
+			const Point3d ptHit(ray.GetPoint(intRay.pick.dist));
+			oStream.print("%.7f %.7f %.7f\n", ptHit.x, ptHit.y, ptHit.z);
+		} else 
+			oStream.print("NA\n");
+	}
+	return true;
+}
+
 int main(int argc, LPCTSTR* argv)
 {
 	#ifdef _DEBUGINFO
@@ -238,6 +352,12 @@ int main(int argc, LPCTSTR* argv)
 		Finalize();
 		return EXIT_SUCCESS;
 	}
+
+	if (!OPT::strImagePointsFileName.empty() && !scene.mesh.IsEmpty()) {
+		Export3DProjections(scene, MAKE_PATH_SAFE(OPT::strImagePointsFileName));
+		return EXIT_SUCCESS;
+	}
+
 	if (OPT::bMeshExport) {
 		// check there is a mesh to export
 		if (scene.mesh.IsEmpty())
@@ -292,7 +412,7 @@ int main(int argc, LPCTSTR* argv)
 			TD_TIMER_START();
 			if (OPT::bUseConstantWeight)
 				scene.pointcloud.pointWeights.Release();
-			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, 4, OPT::fThicknessFactor, OPT::fQualityFactor))
+			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::bUseOnlyROI, 4, OPT::fThicknessFactor, OPT::fQualityFactor))
 				return EXIT_FAILURE;
 			VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 			#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -308,9 +428,9 @@ int main(int argc, LPCTSTR* argv)
 
 		// clean the mesh
 		const float fDecimate(OPT::nTargetFaceNum ? static_cast<float>(OPT::nTargetFaceNum) / scene.mesh.faces.size() : OPT::fDecimateMesh);
-		scene.mesh.Clean(fDecimate, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh, false);
-		scene.mesh.Clean(1.f, 0.f, OPT::bRemoveSpikes, OPT::nCloseHoles, 0, false); // extra cleaning trying to close more holes
-		scene.mesh.Clean(1.f, 0.f, false, 0, 0, true); // extra cleaning to remove non-manifold problems created by closing holes
+		scene.mesh.Clean(fDecimate, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh, OPT::fEdgeLength, false);
+		scene.mesh.Clean(1.f, 0.f, OPT::bRemoveSpikes, OPT::nCloseHoles, 0u, 0.f, false); // extra cleaning trying to close more holes
+		scene.mesh.Clean(1.f, 0.f, false, 0u, 0u, 0.f, true); // extra cleaning to remove non-manifold problems created by closing holes
 
 		// save the final mesh
 		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
@@ -319,6 +439,11 @@ int main(int argc, LPCTSTR* argv)
 		if (VERBOSITY_LEVEL > 2)
 			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+OPT::strExportType);
 		#endif
+	}
+
+	if (!OPT::strImagePointsFileName.empty()) {
+		Export3DProjections(scene, MAKE_PATH_SAFE(OPT::strImagePointsFileName));
+		return EXIT_SUCCESS;
 	}
 
 	Finalize();

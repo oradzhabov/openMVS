@@ -71,6 +71,9 @@ public:
 	typedef TPoint2<Type> TexCoord;
 	typedef cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
 
+	typedef TPoint3<FIndex> FaceFaces;
+	typedef cList<FaceFaces,const FaceFaces&,0,8192,FIndex> FaceFacesArr;
+
 	// used to find adjacent face
 	struct FaceCount {
 		int count;
@@ -123,6 +126,7 @@ public:
 	BoolArr vertexBoundary; // for each vertex, stores if it is at the boundary or not (optional)
 
 	NormalArr faceNormals; // for each face, the normal to it (optional)
+	FaceFacesArr faceFaces; // for each face, the list of adjacent faces, NO_ID for border edges (optional)
 	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to the contained vertices (optional)
 
 	Image8U3 textureDiffuse; // texture containing the diffuse color (optional)
@@ -132,15 +136,16 @@ public:
 	#endif
 
 public:
+	#ifdef _USE_CUDA
 	inline Mesh() {
-		#ifdef _USE_CUDA
-		InitKernels();
-		#endif
+		InitKernels(CUDA::desiredDeviceID);
 	}
+	#endif
 
 	void Release();
 	void ReleaseExtra();
 	void EmptyExtra();
+	void Swap(Mesh&);
 	inline bool IsEmpty() const { return vertices.IsEmpty(); }
 	inline bool HasTexture() const { ASSERT(faceTexcoords.IsEmpty() == textureDiffuse.empty()); return !faceTexcoords.IsEmpty(); }
 
@@ -150,6 +155,7 @@ public:
 
 	void ListIncidenteVertices();
 	void ListIncidenteFaces();
+	void ListIncidenteFaceFaces();
 	void ListBoundaryVertices();
 	void ComputeNormalFaces();
 	void ComputeNormalVertices();
@@ -161,7 +167,7 @@ public:
 	void GetAdjVertexFaces(VIndex, VIndex, FaceIdxArr&) const;
 
 	bool FixNonManifold();
-	void Clean(float fDecimate=0.7f, float fSpurious=10.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2, bool bLastClean=true);
+	void Clean(float fDecimate=0.7f, float fSpurious=10.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2, float fEdgeLength=0, bool bLastClean=true);
 
 	void EnsureEdgeSize(float minEdge=-0.5f, float maxEdge=-4.f, float collapseRatio=0.2, float degenerate_angle_deg=150, int mode=1, int max_iters=50);
 
@@ -199,6 +205,7 @@ public:
 
 	void Project(const Camera& camera, DepthMap& depthMap) const;
 	void Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
+	void Project(const Camera& camera, DepthMap& depthMap, NormalMap& normalMap) const;
 	void ProjectOrtho(const Camera& camera, DepthMap& depthMap) const;
 	void ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
 	void ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& mask, Point3& center) const;
@@ -317,6 +324,50 @@ struct TRasterMesh : TRasterMeshBase<DERIVED> {
 		}
 		// draw triangle
 		Image8U3::RasterizeTriangleBary(pti[0], pti[1], pti[2], *this);
+	}
+};
+/*----------------------------------------------------------------*/
+
+
+struct IntersectRayMesh {
+	typedef Mesh::Octree Octree;
+	typedef typename Octree::IDX_TYPE IDX;
+
+	const Mesh& mesh;
+	const Ray3& ray;
+	IndexDist pick;
+
+	IntersectRayMesh(const Octree& octree, const Ray3& _ray, const Mesh& _mesh)
+		: mesh(_mesh), ray(_ray)
+	{
+		octree.Collect(*this, *this);
+	}
+
+	inline bool Intersects(const typename Octree::POINT_TYPE& center, typename Octree::Type radius) const {
+		return ray.Intersects(AABB3f(center, radius));
+	}
+
+	void operator () (const IDX* idices, IDX size) {
+		// store all intersected faces only once
+		typedef std::unordered_set<Mesh::FIndex> FaceSet;
+		FaceSet set;
+		FOREACHRAWPTR(pIdx, idices, size) {
+			const Mesh::VIndex idxVertex((Mesh::VIndex)*pIdx);
+			const Mesh::FaceIdxArr& faces = mesh.vertexFaces[idxVertex];
+			set.insert(faces.begin(), faces.end());
+		}
+		// test face intersection and keep the closest
+		for (Mesh::FIndex idxFace : set) {
+			const Mesh::Face& face = mesh.faces[idxFace];
+			REAL dist;
+			if (ray.Intersects<true>(Triangle3(Cast<REAL>(mesh.vertices[face[0]]), Cast<REAL>(mesh.vertices[face[1]]), Cast<REAL>(mesh.vertices[face[2]])), &dist)) {
+				ASSERT(dist >= 0);
+				if (pick.dist > dist) {
+					pick.dist = dist;
+					pick.idx = idxFace;
+				}
+			}
+		}
 	}
 };
 /*----------------------------------------------------------------*/

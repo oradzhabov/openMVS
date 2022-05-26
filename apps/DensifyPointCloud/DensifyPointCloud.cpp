@@ -49,8 +49,12 @@ namespace OPT {
 String strInputFileName;
 String strOutputFileName;
 String strViewNeighborsFileName;
+String strOutputViewNeighborsFileName;
 String strMeshFileName;
+String strExportROIFileName;
+String strImportROIFileName;
 String strDenseConfigFileName;
+String strExportDepthMapsName;
 float fMaxSubsceneArea;
 float fSampleMesh;
 int nFusionMode;
@@ -88,15 +92,27 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			#endif
 			), "verbosity level")
 		#endif
+		#ifdef _USE_CUDA
+		("cuda-device", boost::program_options::value(&CUDA::desiredDeviceID)->default_value(-1), "CUDA device number to be used for depth-map estimation (-2 - CPU processing, -1 - best GPU, >=0 - device index)")
+		#endif
 		;
 
 	// group of options allowed both on command line and in config file
 	unsigned nCUDADevice;
+	#ifdef _USE_CUDA
+	const unsigned nNumViewsDefault(8);
+	const unsigned numIters(4);
+	#else
+	const unsigned nNumViewsDefault(5);
+	const unsigned numIters(3);
+	#endif
 	unsigned nResolutionLevel;
 	unsigned nMaxResolution;
 	unsigned nMinResolution;
 	unsigned nNumViews;
 	unsigned nMinViewsFuse;
+	unsigned nEstimationIters;
+	unsigned nEstimationGeometricIters;
 	unsigned nEstimateColors;
 	unsigned nEstimateNormals;
 	unsigned nEstimationGeometricIters;
@@ -104,15 +120,18 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
-		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the dense point-cloud")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the dense point-cloud (optional)")
 		("view-neighbors-file", boost::program_options::value<std::string>(&OPT::strViewNeighborsFileName), "input filename containing the list of views and their neighbors (optional)")
 		("cuda-device", boost::program_options::value(&nCUDADevice)->default_value(0), "CUDA device number to be used for depth-map estimation (-1 - CPU processing)")
+		("output-view-neighbors-file", boost::program_options::value<std::string>(&OPT::strOutputViewNeighborsFileName), "output filename containing the generated list of views and their neighbors")
 		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
-		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(3200), "do not scale images higher than this resolution")
+		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(2560), "do not scale images higher than this resolution")
 		("min-resolution", boost::program_options::value(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
-		("number-views", boost::program_options::value(&nNumViews)->default_value(5), "number of views used for depth-map estimation (0 - all neighbor views available)")
+		("number-views", boost::program_options::value(&nNumViews)->default_value(nNumViewsDefault), "number of views used for depth-map estimation (0 - all neighbor views available)")
 		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(3), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier (<2 - only merge depth-maps)")
 		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "integer value for the label to ignore in the segmentation mask (<0 - disabled)")
+		("iters", boost::program_options::value(&nEstimationIters)->default_value(numIters), "number of patch-match iterations")
+		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(2), "number of geometric consistent patch-match iterations (0 - disabled)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
@@ -128,7 +147,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
 		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name used for image pair overlap estimation")
+		("export-roi-file", boost::program_options::value<std::string>(&OPT::strExportROIFileName), "ROI file name to be exported form the scene")
+		("import-roi-file", boost::program_options::value<std::string>(&OPT::strImportROIFileName), "ROI file name to be imported into the scene")
 		("dense-config-file", boost::program_options::value<std::string>(&OPT::strDenseConfigFileName), "optional configuration file for the densifier (overwritten by the command line options)")
+		("export-depth-maps-name", boost::program_options::value<std::string>(&OPT::strExportDepthMapsName), "render given mesh and save the depth-map for every image to this file name base (empty - disabled)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -162,7 +184,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// print application details: version and command line
 	Util::LogBuild();
-	LOG(_T("Command line:%s"), Util::CommandLineToString(argc, argv).c_str());
+	LOG(_T("Command line: ") APPNAME _T("%s"), Util::CommandLineToString(argc, argv).c_str());
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
@@ -177,7 +199,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidPath(OPT::strViewNeighborsFileName);
+	Util::ensureValidPath(OPT::strOutputViewNeighborsFileName);
 	Util::ensureValidPath(OPT::strMeshFileName);
+	Util::ensureValidPath(OPT::strExportROIFileName);
+	Util::ensureValidPath(OPT::strImportROIFileName);
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_dense.mvs");
 
@@ -193,6 +218,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nMinResolution = nMinResolution;
 	OPTDENSE::nNumViews = nNumViews;
 	OPTDENSE::nMinViewsFuse = nMinViewsFuse;
+	OPTDENSE::nEstimationIters = nEstimationIters;
+	OPTDENSE::nEstimationGeometricIters = nEstimationGeometricIters;
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
 	OPTDENSE::nIgnoreMaskLabel = nIgnoreMaskLabel;
@@ -260,17 +287,53 @@ int main(int argc, LPCTSTR* argv)
 	// load and estimate a dense point-cloud
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;
+	if (!OPT::strExportROIFileName.empty() && scene.IsBounded()) {
+		std::ofstream fs(MAKE_PATH_SAFE(OPT::strExportROIFileName));
+		if (!fs)
+			return EXIT_FAILURE;
+		fs << scene.obb;
+		Finalize();
+		return EXIT_SUCCESS;
+	}
+	if (!OPT::strImportROIFileName.empty()) {
+		std::ifstream fs(MAKE_PATH_SAFE(OPT::strImportROIFileName));
+		if (!fs)
+			return EXIT_FAILURE;
+		fs >> scene.obb;
+		scene.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+		Finalize();
+		return EXIT_SUCCESS;
+	}
 	if (!OPT::strMeshFileName.empty())
 		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
 	if (scene.pointcloud.IsEmpty() && OPT::strViewNeighborsFileName.empty() && scene.mesh.IsEmpty()) {
 		VERBOSE("error: empty initial point-cloud");
 		return EXIT_FAILURE;
 	}
+	if (!OPT::strViewNeighborsFileName.empty())
+		scene.LoadViewNeighbors(MAKE_PATH_SAFE(OPT::strViewNeighborsFileName));
+	if (!OPT::strOutputViewNeighborsFileName.empty()) {
+		if (!scene.ImagesHaveNeighbors()) {
+			VERBOSE("error: neighbor views not computed yet");
+			return EXIT_FAILURE;
+		}
+		scene.SaveViewNeighbors(MAKE_PATH_SAFE(OPT::strOutputViewNeighborsFileName));
+		return EXIT_SUCCESS;
+	}
+	if (!OPT::strExportDepthMapsName.empty() && !scene.mesh.IsEmpty()) {
+		// project mesh onto each image and save the resulted depth-maps
+		TD_TIMER_START();
+		if (!scene.ExportMeshToDepthMaps(MAKE_PATH_SAFE(OPT::strExportDepthMapsName)))
+			return EXIT_FAILURE;
+		VERBOSE("Mesh projection completed: %u depth-maps (%s)", scene.images.size(), TD_TIMER_GET_FMT().c_str());
+		Finalize();
+		return EXIT_SUCCESS;
+	}
 	if (OPT::fMaxSubsceneArea > 0) {
 		// split the scene in sub-scenes by maximum sampling area
 		Scene::ImagesChunkArr chunks;
 		scene.Split(chunks, OPT::fMaxSubsceneArea);
-		scene.ExportChunks(chunks, Util::getFilePath(MAKE_PATH_SAFE(OPT::strOutputFileName)), (ARCHIVE_TYPE)OPT::nArchiveType);
+		scene.ExportChunks(chunks, GET_PATH_FULL(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
 		Finalize();
 		return EXIT_SUCCESS;
 	}
@@ -291,8 +354,6 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_SUCCESS;
 	}
 	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS) {
-		if (!OPT::strViewNeighborsFileName.empty())
-			scene.LoadViewNeighbors(MAKE_PATH_SAFE(OPT::strViewNeighborsFileName));
 		TD_TIMER_START();
 		if (!scene.DenseReconstruction(OPT::nFusionMode)) {
 			if (ABS(OPT::nFusionMode) != 1)
