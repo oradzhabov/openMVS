@@ -124,6 +124,7 @@ extern float fNCCThresholdKeep;
 extern float fNCCThresholdKeepCUDA;
 #endif // _USE_CUDA
 extern unsigned nEstimationIters;
+extern unsigned nEstimationSubResolutions;
 extern unsigned nEstimationGeometricIters;
 extern float fEstimationGeometricWeight;
 extern unsigned nRandomIters;
@@ -212,6 +213,7 @@ struct MVS_API DepthData {
 	CriticalSection cs; // used to count references
 
 	inline DepthData() : references(0) {}
+	DepthData(const DepthData&);
 
 	inline void ReleaseImages() {
 		for (ViewData& image: images) {
@@ -341,6 +343,7 @@ struct MVS_API DepthEstimator {
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
 	WeightMap& weightMap0;
 	#endif
+	DepthMap lowResDepthMap;
 
 	const unsigned nIteration; // current PatchMatch iteration
 	const DepthData::ViewDataArr images; // neighbor images used
