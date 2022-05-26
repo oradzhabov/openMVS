@@ -116,7 +116,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	unsigned nEstimationGeometricIters;
 	unsigned nEstimateColors;
 	unsigned nEstimateNormals;
-	unsigned nEstimationGeometricIters;
 	int nIgnoreMaskLabel;
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
@@ -139,7 +138,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth map fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
-		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(3), "Number of geometric consistent patch-match iterations (0 - disabled)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled)")
 		;
