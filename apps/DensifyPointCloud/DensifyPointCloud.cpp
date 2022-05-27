@@ -224,7 +224,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
 	OPTDENSE::nIgnoreMaskLabel = nIgnoreMaskLabel;
-	OPTDENSE::nEstimationGeometricIters = nEstimationGeometricIters;
 	if (!bValidConfig && !OPT::strDenseConfigFileName.empty())
 		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
 
