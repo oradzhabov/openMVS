@@ -100,7 +100,7 @@ MDEFVAR_OPTDENSE_int32(nIgnoreMaskLabel, "Ignore Mask Label", "label id used dur
 MDEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps?", "7") // see DepthFlags
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "0", "1", "2")
-MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "1.15", "0.3")
+MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.9", "0.5")
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
 DEFVAR_OPTDENSE_uint32(nEstimationSubResolutions, "SubResolution levels", "Number of lower resolution levels to estimate the depth and normals", "2")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
@@ -394,12 +394,12 @@ DepthEstimator::DepthEstimator(
 	smoothSigmaDepth(-1.f/(2.f*SQUARE(OPTDENSE::fRandomSmoothDepth))), // used in exp(-x^2 / (2*(0.02^2)))
 	smoothSigmaNormal(-1.f/(2.f*SQUARE(FD2R(OPTDENSE::fRandomSmoothNormal)))), // used in exp(-x^2 / (2*(0.22^2)))
 	thMagnitudeSq(OPTDENSE::fDescriptorMinMagnitudeThreshold>0?SQUARE(OPTDENSE::fDescriptorMinMagnitudeThreshold):-1.f),
-	angle1Range(FD2R(OPTDENSE::fRandomAngle1Range)),
-	angle2Range(FD2R(OPTDENSE::fRandomAngle2Range)),
-	thRobust(OPTDENSE::fNCCThresholdKeep),
-	thConfSmall(OPTDENSE::fNCCThresholdKeep *0.2f),
-	thConfBig(OPTDENSE::fNCCThresholdKeep *0.5f),
-	thConfRand(OPTDENSE::fNCCThresholdKeep *0.9f)
+	angle1Range(FD2R(OPTDENSE::fRandomAngle1Range)), //default 0.279252678=FD2R(20)
+	angle2Range(FD2R(OPTDENSE::fRandomAngle2Range)), //default 0.174532920=FD2R(16)
+	thConfSmall(OPTDENSE::fNCCThresholdKeep * 0.66f), // default 0.6
+	thConfBig(OPTDENSE::fNCCThresholdKeep * 0.9f), // default 0.8
+	thConfRand(OPTDENSE::fNCCThresholdKeep * 1.1f), // default 0.99
+	thRobust(OPTDENSE::fNCCThresholdKeep * 4.f / 3.f) // default 1.2
 	#if DENSE_REFINE == DENSE_REFINE_EXACT
 	, thPerturbation(1.f/POW(2.f,float(nIter+1)))
 	#endif
