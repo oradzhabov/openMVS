@@ -182,7 +182,7 @@ bool DepthMapsData::SelectViews(IIndexArr& images, IIndexArr& imagesMap, IIndexA
 	typedef MRFEnergy<TypeGeneral> MRFEnergyType;
 	CAutoPtr<MRFEnergyType> energy(new MRFEnergyType(TypeGeneral::GlobalSize()));
 	CAutoPtrArr<MRFEnergyType::NodeId> nodes(new MRFEnergyType::NodeId[_num_nodes]);
-	typedef SEACAVE::cList<TypeGeneral::REAL, const TypeGeneral::REAL&, 0> EnergyCostArr;
+	typedef SEACAVE::cList<TypeGeneral::REAL, TypeGeneral::REAL, 0> EnergyCostArr;
 	// unary costs: inverse proportional to the image pair score
 	EnergyCostArr arrUnary(_num_labels);
 	for (IIndex n=0; n<_num_nodes; ++n) {
@@ -385,9 +385,10 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 			Depth dMin, dMax;
 			NormalMap normalMap;
 			ConfidenceMap confMap;
+			ViewsMap viewsMap;
 			ImportDepthDataRaw(ComposeDepthFilePath(view.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, view.cameraDepthMap.K, view.cameraDepthMap.R, view.cameraDepthMap.C,
-				dMin, dMax, view.depthMap, normalMap, confMap, 1);
+				dMin, dMax, view.depthMap, normalMap, confMap, viewsMap, 1);
 		}
 		view.Init(viewRef.camera);
 	}
@@ -399,9 +400,10 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		cv::Size imageSize;
 		Camera camera;
 		ConfidenceMap confMap;
+		ViewsMap viewsMap;
 		if (!ImportDepthDataRaw(ComposeDepthFilePath(viewRef.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, depthData.dMin, depthData.dMax,
-				depthData.depthMap, depthData.normalMap, confMap, 3))
+				depthData.depthMap, depthData.normalMap, confMap, viewsMap, 3))
 			return false;
 		ASSERT(viewRef.image.size() == depthData.depthMap.size());
 	} else if (loadDepthMaps == 0) {
@@ -502,6 +504,7 @@ void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 			// replace invalid normal with random values
 			normal = estimator.RandomNormal(viewDir);
 		}
+		ASSERT(ISEQUAL(norm(normal), 1.f));
 		estimator.confMap0(x) = estimator.ScorePixel(depth, normal);
 	}
 	return NULL;
@@ -585,7 +588,7 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 		viewData.Init(rescaledDepthData.images[0].camera);
 	}
 	if (!rescaledDepthData.depthMap.empty())
-		cv::resize(rescaledDepthData.depthMap, rescaledDepthData.depthMap, cv::Size(), scale, scale, cv::INTER_LINEAR);
+		cv::resize(rescaledDepthData.depthMap, rescaledDepthData.depthMap, cv::Size(), scale, scale, cv::INTER_NEAREST);
 	if (!rescaledDepthData.normalMap.empty())
 		cv::resize(rescaledDepthData.normalMap, rescaledDepthData.normalMap, cv::Size(), scale, scale, cv::INTER_NEAREST);
 	return rescaledDepthData;
@@ -630,7 +633,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 
 	// Multi-Resolution : 
 	DepthData& fullResDepthData(arrDepthData[idxImage]);
-	const unsigned totalScaleNumber(nGeometricIter < 0 ? OPTDENSE::nEstimationSubResolutions : 0u);
+	const unsigned totalScaleNumber(nGeometricIter < 0 ? OPTDENSE::nSubResolutionLevels : 0u);
 	DepthMap lowResDepthMap;
 	NormalMap lowResNormalMap;
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
@@ -649,7 +652,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		ASSERT(!image.image.empty() && !depthData.images[1].image.empty());
 		const Image8U::Size size(image.image.size());
 		if (scaleNumber != totalScaleNumber) {
-			cv::resize(lowResDepthMap, depthData.depthMap, size, 0, 0, cv::INTER_LINEAR);
+			cv::resize(lowResDepthMap, depthData.depthMap, size, 0, 0, OPTDENSE::nIgnoreMaskLabel >= 0 ? cv::INTER_NEAREST : cv::INTER_LINEAR);
 			cv::resize(lowResNormalMap, depthData.normalMap, size, 0, 0, cv::INTER_NEAREST);
 			depthData.depthMap.copyTo(currentSizeResDepthMap);
 		}
@@ -667,9 +670,9 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		#else
 		cv::integral(image.image, imageSum0, CV_64F);
 		#endif
-		if (prevDepthMapSize != size) {
+		if (prevDepthMapSize != size || OPTDENSE::nIgnoreMaskLabel >= 0) {
 			BitMatrix mask;
-			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*depthData.GetView().pImageData, depthData.depthMap.size(), mask, (uint16_t)OPTDENSE::nIgnoreMaskLabel))
+			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), mask, (uint16_t)OPTDENSE::nIgnoreMaskLabel))
 				depthData.ApplyIgnoreMask(mask);
 			DepthEstimator::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
 			#if 0
@@ -680,8 +683,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 				cmask(x.y, x.x) = 255;
 			cmask.Show("cmask");
 			#endif
-			if (mask.empty())
-				prevDepthMapSize = size;
+			prevDepthMapSize = size;
 		}
 
 		// initialize the reference confidence map (NCC score map) with the score of the current estimates
@@ -765,7 +767,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	{
 		const float fNCCThresholdKeep(OPTDENSE::fNCCThresholdKeep);
 		if (nGeometricIter < 0 && OPTDENSE::nEstimationGeometricIters)
-			OPTDENSE::fNCCThresholdKeep *= 1.5f;
+			OPTDENSE::fNCCThresholdKeep *= 1.333f;
 		// create working threads
 		idxPixel = -1;
 		ASSERT(estimators.empty());
@@ -1463,7 +1465,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				PointCloud::ViewArr& views = pointcloud.pointViews.AddEmpty();
 				views.Insert(idxImage);
 				PointCloud::WeightArr& weights = pointcloud.pointWeights.AddEmpty();
-				REAL confidence(weights.emplace_back(Conf2Weight(depthData.confMap(x),depth)));
+				REAL confidence(weights.emplace_back(Conf2Weight(depthData.confMap.empty() ? 1.f : depthData.confMap(x),depth)));
 				ProjArr& pointProjs = projs.AddEmpty();
 				pointProjs.Insert(Proj(x));
 				const PointCloud::Normal normal(bNormalMap ? Cast<Normal::Type>(imageData.camera.R.t()*Cast<REAL>(depthData.normalMap(x))) : Normal(0,0,-1));
@@ -1499,7 +1501,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 						if (normal.dot(normalB) > normalError) {
 							// add view to the 3D point
 							ASSERT(views.FindFirst(idxImageB) == PointCloud::ViewArr::NO_INDEX);
-							const float confidenceB(Conf2Weight(depthDataB.confMap(xB),depthB));
+							const float confidenceB(Conf2Weight(depthDataB.confMap.empty() ? 1.f : depthDataB.confMap(xB),depthB));
 							const IIndex idx(views.InsertSort(idxImageB));
 							weights.InsertAt(idx, confidenceB);
 							pointProjs.InsertAt(idx, Proj(xB));

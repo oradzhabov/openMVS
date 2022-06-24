@@ -74,6 +74,10 @@
 
 
 // S T R U C T S ///////////////////////////////////////////////////
+namespace MVS {
+	typedef TMatrix<uint8_t, 4, 1> ViewsID;
+}
+DEFINE_CVDATATYPE(MVS::ViewsID)
 
 namespace MVS {
 
@@ -90,6 +94,7 @@ enum DepthFlags {
 extern unsigned nResolutionLevel;
 extern unsigned nMaxResolution;
 extern unsigned nMinResolution;
+extern unsigned nSubResolutionLevels;
 extern unsigned nMinViews;
 extern unsigned nMaxViews;
 extern unsigned nMinViewsFuse;
@@ -120,7 +125,6 @@ extern unsigned nEstimateColors;
 extern unsigned nEstimateNormals;
 extern float fNCCThresholdKeep;
 extern unsigned nEstimationIters;
-extern unsigned nEstimationSubResolutions;
 extern unsigned nEstimationGeometricIters;
 extern float fEstimationGeometricWeight;
 extern unsigned nRandomIters;
@@ -134,6 +138,8 @@ extern float fRandomSmoothBonus;
 } // namespace OPTDENSE
 /*----------------------------------------------------------------*/
 
+
+typedef TImage<ViewsID> ViewsMap;
 
 template <int nTexels>
 struct WeightedPatchFix {
@@ -204,6 +210,7 @@ struct MVS_API DepthData {
 	DepthMap depthMap; // depth-map
 	NormalMap normalMap; // normal-map in camera space
 	ConfidenceMap confMap; // confidence-map
+	ViewsMap viewsMap; // view-IDs map (indexing images vector starting after first view)
 	float dMin, dMax; // global depth range for this image
 	unsigned references; // how many times this depth-map is referenced (on 0 can be safely unloaded)
 	CriticalSection cs; // used to count references
@@ -221,6 +228,7 @@ struct MVS_API DepthData {
 		depthMap.release();
 		normalMap.release();
 		confMap.release();
+		viewsMap.release();
 	}
 
 	inline bool IsValid() const {
@@ -239,7 +247,7 @@ struct MVS_API DepthData {
 	void ApplyIgnoreMask(const BitMatrix&);
 
 	bool Save(const String& fileName) const;
-	bool Load(const String& fileName, unsigned flags=7);
+	bool Load(const String& fileName, unsigned flags=15);
 
 	unsigned GetRef();
 	unsigned IncRef(const String& fileName);
@@ -253,6 +261,7 @@ struct MVS_API DepthData {
 		ar & depthMap;
 		ar & normalMap;
 		ar & confMap;
+		ar & viewsMap;
 		ar & dMin;
 		ar & dMax;
 	}
@@ -428,6 +437,7 @@ struct MVS_API DepthEstimator {
 	inline Normal RandomNormal(const Point3f& viewRay) {
 		Normal normal;
 		Dir2Normal(Point2f(rnd.randomRange(FD2R(0.f),FD2R(180.f)), rnd.randomRange(FD2R(90.f),FD2R(180.f))), normal);
+		ASSERT(ISEQUAL(norm(normal), 1.f));
 		return normal.dot(viewRay) > 0 ? -normal : normal;
 	}
 
@@ -437,6 +447,7 @@ struct MVS_API DepthEstimator {
 		const float cosAngLen(normal.dot(viewDir));
 		if (cosAngLen >= 0)
 			normal = RMatrixBaseF(normal.cross(viewDir), MINF((ACOS(cosAngLen/norm(viewDir))-FD2R(90.f))*1.01f, -0.001f)) * normal;
+		ASSERT(ISEQUAL(norm(normal), 1.f));
 	}
 
 	static bool ImportIgnoreMask(const Image&, const Image8U::Size&, BitMatrix&, uint16_t nIgnoreMaskLabel);
@@ -491,12 +502,12 @@ MVS_API bool ExportDepthDataRaw(const String&, const String& imageFileName,
 	const IIndexArr&, const cv::Size& imageSize,
 	const KMatrix&, const RMatrix&, const CMatrix&,
 	Depth dMin, Depth dMax,
-	const DepthMap&, const NormalMap&, const ConfidenceMap&);
+	const DepthMap&, const NormalMap&, const ConfidenceMap&, const ViewsMap&);
 MVS_API bool ImportDepthDataRaw(const String&, String& imageFileName,
 	IIndexArr&, cv::Size& imageSize,
 	KMatrix&, RMatrix&, CMatrix&,
 	Depth& dMin, Depth& dMax,
-	DepthMap&, NormalMap&, ConfidenceMap&, unsigned flags=7);
+	DepthMap&, NormalMap&, ConfidenceMap&, ViewsMap&, unsigned flags=15);
 
 MVS_API void CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT, uint32_t idxImage, float threshold=0.01f);
 MVS_API void CompareNormalMaps(const NormalMap& normalMap, const NormalMap& normalMapGT, uint32_t idxImage);
