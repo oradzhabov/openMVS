@@ -1,7 +1,7 @@
 /*
 * DepthMap.h
 *
-* Copyright (c) 2014-2015 SEACAVE
+* Copyright (c) 2014-2022 SEACAVE
 *
 * Author(s):
 *
@@ -35,7 +35,6 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "Image.h"
 #include "PointCloud.h"
 
 
@@ -105,6 +104,8 @@ extern unsigned nNumViews;
 extern unsigned nPointInsideROI;
 extern bool bFilterAdjust;
 extern bool bAddCorners;
+extern bool bInitSparse;
+extern bool bRemoveDmaps;
 extern float fViewMinScore;
 extern float fViewMinScoreRatio;
 extern float fMinArea;
@@ -191,6 +192,7 @@ struct MVS_API DepthData {
 		}
 
 		static bool NeedScaleImage(float scale) {
+			ASSERT(scale > 0);
 			return ABS(scale-1.f) >= 0.15f;
 		}
 		template <typename IMAGE>
@@ -325,7 +327,7 @@ struct MVS_API DepthEstimator {
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	CLISTDEF0IDX(NeighborEstimate,IIndex) neighborsClose; // close neighbor pixel depths to be used for smoothing
 	#endif
-	Vec3 X0;	      //
+	Point3 X0;	      //
 	ImageRef x0;	  // constants during one pixel loop
 	float normSq0;	  //
 	#if DENSE_NCC != DENSE_NCC_WEIGHTED
@@ -470,15 +472,23 @@ struct MVS_API DepthEstimator {
 // Tools
 bool TriangulatePoints2DepthMap(
 	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax, bool bAddCorners);
+	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax, bool bAddCorners, bool bSparseOnly=false);
 bool TriangulatePoints2DepthMap(
 	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, Depth& dMin, Depth& dMax, bool bAddCorners);
+	DepthMap& depthMap, Depth& dMin, Depth& dMax, bool bAddCorners, bool bSparseOnly=false);
 
+// Robustly estimate the plane that fits best the given points
 MVS_API unsigned EstimatePlane(const Point3Arr&, Plane&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneLockFirstPoint(const Point3Arr&, Plane&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneTh(const Point3Arr&, Plane&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneThLockFirstPoint(const Point3Arr&, Plane&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MATH_API int OptimizePlane(Planed& plane, const Eigen::Vector3d* points, size_t size, int maxIters, double threshold);
+// same for float points
+MATH_API unsigned EstimatePlane(const Point3fArr&, Planef&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MATH_API unsigned EstimatePlaneLockFirstPoint(const Point3fArr&, Planef&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MATH_API unsigned EstimatePlaneTh(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MATH_API unsigned EstimatePlaneThLockFirstPoint(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MATH_API int OptimizePlane(Planef& plane, const Eigen::Vector3f* points, size_t size, int maxIters, float threshold);
 
 MVS_API void EstimatePointColors(const ImageArr& images, PointCloud& pointcloud);
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);

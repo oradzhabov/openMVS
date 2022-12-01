@@ -824,7 +824,7 @@ int main(int argc, LPCTSTR* argv)
 			#pragma omp flush (bAbort)
 			continue;
 			#else
-			return false;
+			return EXIT_FAILURE;
 			#endif
 		}
 		imageData.UpdateCamera(scene.platforms);
@@ -834,7 +834,7 @@ int main(int argc, LPCTSTR* argv)
 	GET_LOGCONSOLE().Play();
 	#ifdef _USE_OPENMP
 	if (bAbort)
-		return EXIT_SUCCESS;
+		return EXIT_FAILURE;
 	#endif
 	progress.close();
 
@@ -849,7 +849,7 @@ int main(int argc, LPCTSTR* argv)
 	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
 
 	VERBOSE("Exported data: %u platforms, %u cameras, %u poses, %u images, %u vertices (%s)",
-			scene.platforms.GetSize(), nCameras, nPoses, scene.images.GetSize(), scene.pointcloud.GetSize(),
+			scene.platforms.size(), nCameras, nPoses, scene.images.size(), scene.pointcloud.GetSize(),
 			TD_TIMER_GET_FMT().c_str());
 
 	Finalize();

@@ -73,10 +73,10 @@ extern "C" {
 	static tmsize_t _tiffisReadProc(thandle_t fd, void* buf, tmsize_t size);
 	static tmsize_t _tiffosWriteProc(thandle_t fd, void* buf, tmsize_t size);
 	static tmsize_t _tiffisWriteProc(thandle_t, void*, tmsize_t);
-	static uint64   _tiffosSeekProc(thandle_t fd, uint64 off, int whence);
-	static uint64   _tiffisSeekProc(thandle_t fd, uint64 off, int whence);
-	static uint64   _tiffosSizeProc(thandle_t fd);
-	static uint64   _tiffisSizeProc(thandle_t fd);
+	static uint64_t _tiffosSeekProc(thandle_t fd, uint64_t off, int whence);
+	static uint64_t _tiffisSeekProc(thandle_t fd, uint64_t off, int whence);
+	static uint64_t _tiffosSizeProc(thandle_t fd);
+	static uint64_t _tiffisSizeProc(thandle_t fd);
 	static int      _tiffosCloseProc(thandle_t fd);
 	static int      _tiffisCloseProc(thandle_t fd);
 	static int 	    _tiffDummyMapProc(thandle_t, void** base, toff_t* size);
@@ -129,26 +129,26 @@ extern "C" {
 		return 0;
 	}
 
-	static uint64 _tiffosSeekProc(thandle_t fd, uint64 off, int whence)
+	static uint64_t _tiffosSeekProc(thandle_t fd, uint64_t off, int whence)
 	{
 		tiffos_data	*data = reinterpret_cast<tiffos_data *>(fd);
 		OSTREAM* os = data->stream;
 
 		// if the stream has already failed, don't do anything
 		if (os == NULL)
-			return static_cast<uint64>(-1);
+			return static_cast<uint64_t>(-1);
 
 		bool bSucceeded(true);
 		switch (whence) {
 		case SEEK_SET:
 		{
 			// Compute 64-bit offset
-			uint64 new_offset = static_cast<uint64>(data->start_pos) + off;
+			uint64_t new_offset = static_cast<uint64_t>(data->start_pos) + off;
 
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(new_offset);
-			if (static_cast<uint64>(offset) != new_offset)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_t>(offset) != new_offset)
+				return static_cast<uint64_t>(-1);
 
 			bSucceeded = os->setPos(offset);
 			break;
@@ -157,8 +157,8 @@ extern "C" {
 		{
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(off);
-			if (static_cast<uint64>(offset) != off)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_t>(offset) != off)
+				return static_cast<uint64_t>(-1);
 
 			bSucceeded = os->setPos(os->getPos()+offset);
 			break;
@@ -167,8 +167,8 @@ extern "C" {
 		{
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(off);
-			if (static_cast<uint64>(offset) != off)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_t>(offset) != off)
+				return static_cast<uint64_t>(-1);
 
 			bSucceeded = os->setPos(os->getSize()-offset);
 			break;
@@ -196,23 +196,23 @@ extern "C" {
 			}
 
 			// only do something if desired seek position is valid
-			if ((static_cast<uint64>(origin) + off) > static_cast<uint64>(data->start_pos)) {
-				uint64	num_fill;
+			if ((static_cast<uint64_t>(origin) + off) > static_cast<uint64_t>(data->start_pos)) {
+				uint64_t	num_fill;
 				// extend the stream to the expected size
 				os->setPos(os->getSize());
-				num_fill = (static_cast<uint64>(origin)) + off - os->getPos();
+				num_fill = (static_cast<uint64_t>(origin)) + off - os->getPos();
 				const char dummy = '\0';
-				for (uint64 i = 0; i < num_fill; i++)
+				for (uint64_t i = 0; i < num_fill; i++)
 					os->write(&dummy, 1);
 				// retry the seek
-				os->setPos(static_cast<size_f_t>(static_cast<uint64>(origin) + off));
+				os->setPos(static_cast<size_f_t>(static_cast<uint64_t>(origin) + off));
 			}
 		}
 
-		return static_cast<uint64>(os->getPos());
+		return static_cast<uint64_t>(os->getPos());
 	}
 
-	static uint64 _tiffisSeekProc(thandle_t fd, uint64 off, int whence)
+	static uint64_t _tiffisSeekProc(thandle_t fd, uint64_t off, int whence)
 	{
 		tiffis_data	*data = reinterpret_cast<tiffis_data *>(fd);
 		ISTREAM* is = data->stream;
@@ -221,12 +221,12 @@ extern "C" {
 		case SEEK_SET:
 		{
 			// Compute 64-bit offset
-			uint64 new_offset = static_cast<uint64>(data->start_pos) + off;
+			uint64_t new_offset = static_cast<uint64_t>(data->start_pos) + off;
 
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(new_offset);
-			if (static_cast<uint64>(offset) != new_offset)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_t>(offset) != new_offset)
+				return static_cast<uint64_t>(-1);
 
 			is->setPos(offset);
 			break;
@@ -235,8 +235,8 @@ extern "C" {
 		{
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(off);
-			if (static_cast<uint64>(offset) != off)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_t>(offset) != off)
+				return static_cast<uint64_t>(-1);
 
 			is->setPos(is->getPos()+offset);
 			break;
@@ -245,27 +245,27 @@ extern "C" {
 		{
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(off);
-			if (static_cast<uint64>(offset) != off)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_t>(offset) != off)
+				return static_cast<uint64_t>(-1);
 
 			is->setPos(is->getSize()-offset);
 			break;
 		}
 		}
 
-		return (uint64)(is->getPos() - data->start_pos);
+		return (uint64_t)(is->getPos() - data->start_pos);
 	}
 
-	static uint64 _tiffosSizeProc(thandle_t fd)
+	static uint64_t _tiffosSizeProc(thandle_t fd)
 	{
 		tiffos_data	*data = reinterpret_cast<tiffos_data *>(fd);
-		return (uint64)data->stream->getSize();
+		return (uint64_t)data->stream->getSize();
 	}
 
-	static uint64 _tiffisSizeProc(thandle_t fd)
+	static uint64_t _tiffisSizeProc(thandle_t fd)
 	{
 		tiffis_data	*data = reinterpret_cast<tiffis_data *>(fd);
-		return (uint64)data->stream->getSize();
+		return (uint64_t)data->stream->getSize();
 	}
 
 	static int _tiffosCloseProc(thandle_t fd)

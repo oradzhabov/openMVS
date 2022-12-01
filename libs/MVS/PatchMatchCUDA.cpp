@@ -200,7 +200,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		textureDepths.resize(params.nNumViews);
 	}
 	const int maxPixelViews(MINF(params.nNumViews, 4));
-	for (int scaleNumber = totalScaleNumber; scaleNumber >= 0; --scaleNumber) {
+	for (unsigned scaleNumber = totalScaleNumber+1; scaleNumber-- > 0; ) {
 		// initialize
 		const float scale = 1.f / POWI(2, scaleNumber);
 		DepthData currentDepthData(DepthMapsData::ScaleDepthData(fullResDepthData, scale));
@@ -365,7 +365,6 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 				const Point4& depthNormal = depthNormalEstimates[index];
 				const Depth depth = depthNormal.w();
 				ASSERT(std::isfinite(depth));
-				ASSERT(depth==0 || ISINSIDE(depth, depthData.dMin, depthData.dMax));
 				depthData.depthMap(r, c) = depth;
 				depthData.normalMap(r, c) = depthNormal.topLeftCorner<3, 1>();
 				if (scaleNumber == 0) {
@@ -403,6 +402,14 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 
 	}
     
+	// apply ignore mask
+	if (OPTDENSE::nIgnoreMaskLabel >= 0) {
+		const DepthData::ViewData& view = depthData.GetView();
+		BitMatrix mask;
+		if (DepthEstimator::ImportIgnoreMask(*view.pImageData, depthData.depthMap.size(), mask, (uint16_t)OPTDENSE::nIgnoreMaskLabel))
+			depthData.ApplyIgnoreMask(mask);
+	}
+
 	// apply ignore mask
 	if (OPTDENSE::nIgnoreMaskLabel >= 0) {
 		const DepthData::ViewData& view = depthData.GetView();

@@ -461,7 +461,7 @@ bool DepthMapsData::InitDepthMap(DepthData& depthData)
 
 	ASSERT(depthData.images.GetSize() > 1 && !depthData.points.IsEmpty());
 	const DepthData::ViewData& image(depthData.GetView());
-	TriangulatePoints2DepthMap(image, scene.pointcloud, depthData.points, depthData.depthMap, depthData.normalMap, depthData.dMin, depthData.dMax, OPTDENSE::bAddCorners);
+	TriangulatePoints2DepthMap(image, scene.pointcloud, depthData.points, depthData.depthMap, depthData.normalMap, depthData.dMin, depthData.dMax, OPTDENSE::bAddCorners, OPTDENSE::bInitSparse);
 	depthData.dMin *= 0.9f;
 	depthData.dMax *= 1.1f;
 
@@ -523,7 +523,7 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 {
 	DepthEstimator& estimator = *((DepthEstimator*)arg);
 	IDX idx;
-	const float fOptimAngle(FD2R(OPTDENSE::fOptimAngle));
+	MAYBEUNUSED const float fOptimAngle(FD2R(OPTDENSE::fOptimAngle));
 	while ((idx=(IDX)Thread::safeInc(estimator.idxPixel)) < estimator.coords.GetSize()) {
 		const ImageRef& x = estimator.coords[idx];
 		ASSERT(estimator.depthMap0(x) >= 0);
@@ -642,7 +642,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	Image64F imageSum0;
 	#endif
 	DepthMap currentSizeResDepthMap;
-	for (int scaleNumber = totalScaleNumber; scaleNumber>=0; scaleNumber--) {
+	for (unsigned scaleNumber = totalScaleNumber+1; scaleNumber-- > 0; ) {
 		// initialize
 		float scale = 1.f / POWI(2, scaleNumber);
 		DepthData currentDepthData(ScaleDepthData(fullResDepthData, scale));
@@ -1625,7 +1625,7 @@ void DenseDepthMapData::SignalCompleteDepthmapFilter()
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
 
-bool Scene::DenseReconstruction(int nFusionMode)
+bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderROI)
 {
 	DenseDepthMapData data(*this, nFusionMode);
 
@@ -1667,10 +1667,11 @@ bool Scene::DenseReconstruction(int nFusionMode)
 	#endif
 
 	if (!pointcloud.IsEmpty()) {
-		if (IsBounded()) {
+		if (bCrop2ROI && IsBounded()) {
 			TD_TIMER_START();
 			const size_t numPoints = pointcloud.GetSize();
-			pointcloud.RemovePointsOutside(obb);
+			const OBB3f ROI(fBorderROI == 0 ? obb : (fBorderROI > 0 ? OBB3f(obb).EnlargePercent(fBorderROI) : OBB3f(obb).Enlarge(-fBorderROI)));
+			pointcloud.RemovePointsOutside(ROI);
 			VERBOSE("Point-cloud trimmed to ROI: %u points removed (%s)",
 				numPoints-pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
 		}
@@ -1678,6 +1679,16 @@ bool Scene::DenseReconstruction(int nFusionMode)
 			EstimatePointColors(images, pointcloud);
 		if (pointcloud.normals.IsEmpty() && OPTDENSE::nEstimateNormals == 1)
 			EstimatePointNormals(images, pointcloud);
+	}
+
+	if (OPTDENSE::bRemoveDmaps) {
+		// delete all depth-map files
+		FOREACH(i, images) {
+			const DepthData& depthData = data.depthMaps.arrDepthData[i];
+			if (!depthData.IsValid())
+				continue;
+			File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
+		}
 	}
 	return true;
 } // DenseReconstruction
@@ -1691,6 +1702,12 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	if (!mesh.IsEmpty() && !ImagesHaveNeighbors()) {
 		SampleMeshWithVisibility();
 		mesh.Release();
+	}
+	
+	// compute point-cloud from the existing mesh
+	if (IsEmpty() && !ImagesHaveNeighbors()) {
+		VERBOSE("warning: empty point-cloud, rough neighbor views selection based on image pairs baseline");
+		EstimateNeighborViewsPointCloud();
 	}
 
 	{

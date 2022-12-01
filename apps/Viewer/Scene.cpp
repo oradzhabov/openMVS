@@ -237,19 +237,17 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 		// load given mesh
 		scene.mesh.Load(meshFileName);
 	}
-	if (scene.IsEmpty())
-		return false;
 	if (!scene.pointcloud.IsEmpty())
 		scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
 
 	#if 1
 	// create octree structure used to accelerate selection functionality
-	events.AddEvent(new EVTComputeOctree(this));
+	if (!scene.IsEmpty())
+		events.AddEvent(new EVTComputeOctree(this));
 	#endif
 
 	// init scene
 	AABB3d bounds(true);
-	AABB3d imageBounds(true);
 	Point3d center(Point3d::INF);
 	if (scene.IsBounded()) {
 		bounds = AABB3d(scene.obb.GetAABB());
@@ -269,6 +267,7 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	}
 
 	// init images
+	AABB3d imageBounds(true);
 	images.Reserve(scene.images.size());
 	FOREACH(idxImage, scene.images) {
 		const MVS::Image& imageData = scene.images[idxImage];
@@ -277,6 +276,10 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 		images.emplace_back(idxImage);
 		imageBounds.InsertFull(imageData.camera.C);
 	}
+	if (imageBounds.IsEmpty())
+		imageBounds.Enlarge(0.5);
+	if (bounds.IsEmpty())
+		bounds = imageBounds;
 
 	// init and load texture
 	if (scene.mesh.HasTexture()) {
@@ -316,7 +319,7 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	window.clbkTogleSceneBox = DELEGATEBINDCLASS(Window::ClbkTogleSceneBox, &Scene::TogleSceneBox, this);
 	if (scene.IsBounded())
 		window.clbkCompileBounds = DELEGATEBINDCLASS(Window::ClbkCompileBounds, &Scene::CompileBounds, this);
-	if (!bounds.IsEmpty())
+	if (!scene.IsEmpty())
 		window.clbkRayScene = DELEGATEBINDCLASS(Window::ClbkRayScene, &Scene::CastRay, this);
 	window.Reset(!scene.pointcloud.IsEmpty()&&!scene.mesh.IsEmpty()?Window::SPR_NONE:Window::SPR_ALL,
 		MINF(2u,images.size()));
@@ -431,6 +434,10 @@ void Scene::CompileMesh()
 	ReleaseMesh();
 	if (scene.mesh.faceNormals.empty())
 		scene.mesh.ComputeNormalFaces();
+	// translate, normalize and flip Y axis of the texture coordinates
+	MVS::Mesh::TexCoordArr normFaceTexcoords;
+	if (scene.mesh.HasTexture())
+		scene.mesh.FaceTexcoordsNormalize(normFaceTexcoords, true);
 	listMesh = glGenLists(1);
 	glNewList(listMesh, GL_COMPILE);
 	// compile mesh
@@ -444,8 +451,8 @@ void Scene::CompileMesh()
 		const MVS::Mesh::Normal& n = scene.mesh.faceNormals[i];
 		glNormal3fv(n.ptr());
 		for (int j = 0; j < 3; ++j) {
-			if (!scene.mesh.faceTexcoords.IsEmpty() && window.bRenderTexture) {
-				const MVS::Mesh::TexCoord& t = scene.mesh.faceTexcoords[i * 3 + j];
+			if (!normFaceTexcoords.empty() && window.bRenderTexture) {
+				const MVS::Mesh::TexCoord& t = normFaceTexcoords[i * 3 + j];
 				glTexCoord2fv(t.ptr());
 			}
 			const MVS::Mesh::Vertex& p = scene.mesh.vertices[face[j]];
@@ -493,9 +500,9 @@ void Scene::Draw()
 	if (listMesh) {
 		glEnable(GL_DEPTH_TEST);
 		glEnable(GL_CULL_FACE);
-		if (!scene.mesh.faceTexcoords.IsEmpty() && window.bRenderTexture) {
+		if (!scene.mesh.faceTexcoords.empty() && window.bRenderTexture) {
 			glEnable(GL_TEXTURE_2D);
-			textures.First().Bind();
+			textures.front().Bind();
 			glCallList(listMesh);
 			glDisable(GL_TEXTURE_2D);
 		} else {
@@ -512,18 +519,8 @@ void Scene::Draw()
 			Image& image = images[idx];
 			const MVS::Image& imageData = scene.images[image.idx];
 			const MVS::Camera& camera = imageData.camera;
-			// change coordinates system to the camera space
-			glPushMatrix();
-			glMultMatrixd((GLdouble*)TransL2W((const Matrix3x3::EMat)camera.R, -(const Point3::EVec)camera.C).data());
-			glPointSize(window.pointSize+1.f);
-			glDisable(GL_TEXTURE_2D);
-			// draw camera position and image center
-			const double scaleFocal(window.camera.scaleF);
-			glBegin(GL_POINTS);
-			glColor3f(1,0,0); glVertex3f(0,0,0); // camera position
-			glColor3f(0,1,0); glVertex3f(0,0,(float)scaleFocal); // image center
-			glEnd();
 			// cache image corner coordinates
+			const double scaleFocal(window.camera.scaleF);
 			const Point2d pp(camera.GetPrincipalPoint());
 			const double focal(camera.GetFocalLength()/scaleFocal);
 			const double cx(-pp.x/focal);
@@ -534,6 +531,17 @@ void Scene::Draw()
 			const Point3d ic2(cx, py, scaleFocal);
 			const Point3d ic3(px, py, scaleFocal);
 			const Point3d ic4(px, cy, scaleFocal);
+			// change coordinates system to the camera space
+			glPushMatrix();
+			glMultMatrixd((GLdouble*)TransL2W((const Matrix3x3::EMat)camera.R, -(const Point3::EVec)camera.C).data());
+			glPointSize(window.pointSize+1.f);
+			glDisable(GL_TEXTURE_2D);
+			// draw camera position and image center
+			glBegin(GL_POINTS);
+			glColor3f(1,0,0); glVertex3f(0,0,0); // camera position
+			glColor3f(0,1,0); glVertex3f(0,0,(float)scaleFocal); // image center
+			glColor3f(0,0,1); glVertex3d((0.5*imageData.width-pp.x)/focal, cy, scaleFocal); // image up
+			glEnd();
 			// draw image thumbnail
 			const bool bSelectedImage(idx == window.camera.currentCamID);
 			if (bSelectedImage) {
@@ -726,7 +734,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 			window.selectionPoints[0] = scene.mesh.vertices[face[0]];
 			window.selectionPoints[1] = scene.mesh.vertices[face[1]];
 			window.selectionPoints[2] = scene.mesh.vertices[face[2]];
-			window.selectionPoints[3] = (ray.m_pOrig + ray.m_vDir*intRay.pick.dist).cast<float>();
+			window.selectionPoints[3] = ray.GetPoint(intRay.pick.dist).cast<float>();
 			window.selectionType = Window::SEL_TRIANGLE;
 			window.selectionTime = now;
 			window.selectionIdx = intRay.pick.idx;
