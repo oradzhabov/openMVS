@@ -67,6 +67,7 @@ public:
 		: obb(true), nMaxThreads(Thread::getMaxThreads(_nMaxThreads)) {}
 
 	void Release();
+	bool IsValid() const;
 	bool IsEmpty() const;
 	bool ImagesHaveNeighbors() const;
 	bool IsBounded() const { return obb.IsValid(); }
@@ -105,6 +106,7 @@ public:
 	bool Scale(const REAL* pScale = NULL);
 	bool ScaleImages(unsigned nMaxResolution = 0, REAL scale = 0, const String& folderName = String());
 	void Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale);
+	void Transform(const Matrix3x4& transform);
 	bool AlignTo(const Scene&);
 	REAL ComputeLeveledVolume(float planeThreshold=0, float sampleMesh=-100000, unsigned upAxis=2, bool verbose=true);
 
@@ -126,8 +128,8 @@ public:
 
 	// Mesh refinement
 	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize,
-		unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, unsigned nReduceMemory, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity,
-		float fThPlanarVertex, float fGradientStep);
+		unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep,
+		float fThPlanarVertex=0.f, unsigned nReduceMemory=1);
 	#ifdef _USE_CUDA
 	bool RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize,
 		unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep);
@@ -136,7 +138,7 @@ public:
 	// Mesh texturing
 	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras=0, float fOutlierThreshold=0.f, float fRatioDataSmoothness=0.3f,
 		bool bGlobalSeamLeveling=true, bool bLocalSeamLeveling=true, unsigned nTextureSizeMultiple=0, unsigned nRectPackingHeuristic=3, Pixel8U colEmpty=Pixel8U(255,127,39),
-		float fSharpnessWeight=0.5f, const IIndexArr& views=IIndexArr());
+		float fSharpnessWeight=0.5f, int ignoreMaskLabel = -1, const IIndexArr& views=IIndexArr());
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

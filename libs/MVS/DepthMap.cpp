@@ -296,24 +296,29 @@ unsigned DepthData::DecRef()
 // S T R U C T S ///////////////////////////////////////////////////
 
 // try to load and apply mask to the depth map;
-// the mask marks as false pixels that should be ignored
-bool DepthEstimator::ImportIgnoreMask(const Image& image0, const Image8U::Size& size, BitMatrix& bmask, uint16_t nIgnoreMaskLabel)
+// the mask for each image is stored in the MVS scene or next to each image with '.mask.png' extension;
+// the mask marks as false (or 0) pixels that should be ignored
+//  - pMask: optional output mask; if defined, the mask is returned in this image instead of the BitMatrix
+bool DepthEstimator::ImportIgnoreMask(const Image& image0, const Image8U::Size& size, uint16_t nIgnoreMaskLabel, BitMatrix& bmask, Image8U* pMask)
 {
 	ASSERT(image0.IsValid() && !image0.image.empty());
-	if (image0.maskName.empty())
-		return false;
+	const String maskFileName(image0.maskName.empty() ? Util::getFileFullName(image0.name)+".mask.png" : image0.maskName);
 	Image16U mask;
-	if (!mask.Load(image0.maskName)) {
-		DEBUG("warning: can not load the segmentation mask '%s'", image0.maskName.c_str());
+	if (!mask.Load(maskFileName)) {
+		DEBUG("warning: can not load the segmentation mask '%s'", maskFileName.c_str());
 		return false;
 	}
 	cv::resize(mask, mask, size, 0, 0, cv::INTER_NEAREST);
-	bmask.create(size);
-	bmask.memset(0xFF);
-	for (int r=0; r<size.height; ++r) {
-		for (int c=0; c<size.width; ++c) {
-			if (mask(r,c) == nIgnoreMaskLabel)
-				bmask.unset(r,c);
+	if (pMask) {
+		*pMask = (mask != nIgnoreMaskLabel);
+	} else {
+		bmask.create(size);
+		bmask.memset(0xFF);
+		for (int r=0; r<size.height; ++r) {
+			for (int c=0; c<size.width; ++c) {
+				if (mask(r,c) == nIgnoreMaskLabel)
+					bmask.unset(r,c);
+			}
 		}
 	}
 	return true;
