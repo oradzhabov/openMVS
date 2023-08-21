@@ -47,6 +47,7 @@ namespace {
 
 namespace OPT {
 String strInputFileName;
+String strPointCloudFileName;
 String strOutputFileName;
 String strViewNeighborsFileName;
 String strOutputViewNeighborsFileName;
@@ -61,7 +62,9 @@ float fSampleMesh;
 float fBorderROI;
 bool bCrop2ROI;
 int nEstimateROI;
+int	nTowerMode;
 int nFusionMode;
+float fEstimateScale;
 int thFilterPointCloud;
 int nExportNumViews;
 int nArchiveType;
@@ -85,7 +88,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: -1-interface, 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -128,6 +131,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
+		("pointcloud-file,p", boost::program_options::value<std::string>(&OPT::strPointCloudFileName), "sparse point-cloud with views file name to densify (overwrite existing point-cloud)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the dense point-cloud (optional)")
 		("view-neighbors-file", boost::program_options::value<std::string>(&OPT::strViewNeighborsFileName), "input filename containing the list of views and their neighbors (optional)")
 		("output-view-neighbors-file", boost::program_options::value<std::string>(&OPT::strOutputViewNeighborsFileName), "output filename containing the generated list of views and their neighbors")
@@ -143,6 +147,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(2), "number of geometric consistent patch-match iterations (0 - disabled)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
+		("estimate-scale", boost::program_options::value(&OPT::fEstimateScale)->default_value(0.f), "estimate the point-scale for the dense point-cloud (scale multiplier, 0 - disabled)")
 		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth-maps fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
@@ -153,6 +158,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
         ("estimate-roi", boost::program_options::value(&OPT::nEstimateROI)->default_value(2), "estimate and set region-of-interest (0 - disabled, 1 - enabled, 2 - adaptive)")
         ("crop-to-roi", boost::program_options::value(&OPT::bCrop2ROI)->default_value(true), "crop scene using the region-of-interest")
         ("remove-dmaps", boost::program_options::value(&bRemoveDmaps)->default_value(false), "remove depth-maps after fusion")
+		("tower-mode", boost::program_options::value(&OPT::nTowerMode)->default_value(3), "add a cylinder of points in the center of ROI; scene assume to be Z-up oriented (0 - disabled, 1 - replace, 2 - append, 3 - select neighbors, <0 - force tower mode)")
         ;
 
 	// hidden options, allowed both on command line and
@@ -210,6 +216,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 
 	// initialize optional options
+	Util::ensureValidPath(OPT::strPointCloudFileName);
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidPath(OPT::strViewNeighborsFileName);
 	Util::ensureValidPath(OPT::strOutputViewNeighborsFileName);
@@ -299,8 +306,13 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_SUCCESS;
 	}
 	// load and estimate a dense point-cloud
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));
+	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
+	if (!OPT::strPointCloudFileName.empty() && !scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName))) {
+		VERBOSE("error: cannot load point-cloud file");
+		return EXIT_FAILURE;
+	}
 	if (!OPT::strMaskPath.empty()) {
 		Util::ensureValidFolderPath(OPT::strMaskPath);
 		for (Image& image : scene.images) {
@@ -334,6 +346,8 @@ int main(int argc, LPCTSTR* argv)
 		Finalize();
 		return EXIT_SUCCESS;
 	}
+	if (OPT::nTowerMode!=0)
+		scene.InitTowerScene(OPT::nTowerMode);
 	if (!OPT::strMeshFileName.empty())
 		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
 	if (!OPT::strViewNeighborsFileName.empty())
@@ -388,11 +402,28 @@ int main(int argc, LPCTSTR* argv)
 		Finalize();
 		return EXIT_SUCCESS;
 	}
-	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS) {
+	if (OPT::fEstimateScale > 0 && !scene.pointcloud.IsEmpty() && !scene.images.empty()) {
+		// simply export existing point-cloud with scale
+		if (scene.pointcloud.normals.empty()) {
+			if (!scene.pointcloud.IsValid()) {
+				VERBOSE("error: can not estimate normals as the point-cloud is not valid");
+				return EXIT_FAILURE;
+			}
+			EstimatePointNormals(scene.images, scene.pointcloud);
+		}
+		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
+		scene.pointcloud.SaveWithScale(baseFileName+_T("_scale.ply"), scene.images, OPT::fEstimateScale);
+		Finalize();
+		return EXIT_SUCCESS;
+	}
+	PointCloud sparsePointCloud;
+	if (OPT::nArchiveType != ARCHIVE_MVS || sceneType == Scene::SCENE_INTERFACE) {
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 1 && !scene.pointcloud.IsEmpty())
 			scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
 		#endif
+		if (OPT::nArchiveType == ARCHIVE_MVS)
+			sparsePointCloud = scene.pointcloud;
 		TD_TIMER_START();
 		if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::bCrop2ROI, OPT::fBorderROI)) {
 			if (ABS(OPT::nFusionMode) != 1)
@@ -406,12 +437,14 @@ int main(int argc, LPCTSTR* argv)
 
 	// save the final point-cloud
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
-	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
-	scene.pointcloud.Save(baseFileName+_T(".ply"));
+	scene.pointcloud.Save(baseFileName+_T(".ply"), OPT::nArchiveType==ARCHIVE_MVS);
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
 		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+_T(".ply"));
 	#endif
+	if (OPT::nArchiveType == ARCHIVE_MVS)
+		scene.pointcloud.Swap(sparsePointCloud);
+	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 
 	Finalize();
 	return EXIT_SUCCESS;

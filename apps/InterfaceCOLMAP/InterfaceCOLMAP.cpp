@@ -31,8 +31,6 @@
 
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
-#define _USE_OPENCV
-#include "../../libs/MVS/Interface.h"
 #include <boost/program_options.hpp>
 #include "endian.h"
 
@@ -68,10 +66,10 @@ namespace {
 namespace OPT {
 bool bFromOpenMVS; // conversion direction
 bool bNormalizeIntrinsics;
+bool bForceSparsePointCloud;
 String strInputFileName;
 String strOutputFileName;
 String strImageFolder;
-unsigned nMaxResolution;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -92,7 +90,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "imports SfM or MVS scene stored in COLMAP undistoreted format OR exports MVS scene to COLMAP format")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: -1-interface, 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -112,8 +110,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input COLMAP folder containing cameras, images and points files OR input MVS project file")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the MVS project")
 		("image-folder", boost::program_options::value<std::string>(&OPT::strImageFolder)->default_value(COLMAP_IMAGES_FOLDER), "folder to the undistorted images")
-		("max-resolution", boost::program_options::value(&OPT::nMaxResolution)->default_value(0), "make sure image resolution are not not larger than this (0 - disabled)")
 		("normalize,f", boost::program_options::value(&OPT::bNormalizeIntrinsics)->default_value(false), "normalize intrinsics while exporting to MVS format")
+		("force-points,p", boost::program_options::value(&OPT::bForceSparsePointCloud)->default_value(false), "force exporting point-cloud as sparse points also even if dense point-cloud detected")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -708,7 +706,7 @@ bool DetermineInputSource(const String& filenameTXT, const String& filenameBIN, 
 }
 
 
-bool ImportScene(const String& strFolder, const String& strOutFolder, Interface& scene)
+bool ImportScene(const String& strFolder, const String& strOutFolder, Interface& scene, PointCloud& pointcloud)
 {
 	// read camera list
 	typedef std::unordered_map<uint32_t,uint32_t> CamerasMap;
@@ -798,7 +796,7 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 	// read points list
 	const String filenameDensePoints(strFolder+COLMAP_DENSE_POINTS);
 	const String filenameDenseVisPoints(strFolder+COLMAP_DENSE_POINTS_VISIBILITY);
-	if (!File::access(filenameDensePoints) || !File::access(filenameDenseVisPoints)) {
+	{
 		// parse sparse point-cloud
 		const String filenamePointsTXT(strFolder+COLMAP_POINTS_TXT);
 		const String filenamePointsBIN(strFolder+COLMAP_POINTS_BIN);
@@ -809,7 +807,6 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			return false;
 		}
 		LOG_OUT() << "Reading points: " << filenamePoints << std::endl;
-
 		COLMAP::Point point;
 		while (file.good() && point.Read(file, binary)) {
 			Interface::Vertex vertex;
@@ -825,10 +822,11 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			scene.vertices.emplace_back(std::move(vertex));
 			scene.verticesColor.emplace_back(Interface::Color{point.c});
 		}
-	} else {
+	}
+	pointcloud.Release();
+	if (File::access(filenameDensePoints) && File::access(filenameDenseVisPoints)) {
 		// parse dense point-cloud
 		LOG_OUT() << "Reading points: " << filenameDensePoints << " and " << filenameDenseVisPoints << std::endl;
-		PointCloud pointcloud;
 		if (!pointcloud.Load(filenameDensePoints)) {
 			VERBOSE("error: unable to open file '%s'", filenameDensePoints.c_str());
 			return false;
@@ -844,22 +842,17 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			VERBOSE("error: point-cloud and visibility have different size");
 			return false;
 		}
+		pointcloud.pointViews.resize(numPoints);
 		for (size_t i=0; i<numPoints; ++i) {
-			Interface::Vertex vertex;
-			vertex.X = pointcloud.points[i];
+			PointCloud::ViewArr& views = pointcloud.pointViews[i];
 			uint32_t numViews(0);
 			file.read(&numViews, sizeof(uint32_t));
 			for (uint32_t v=0; v<numViews; ++v) {
-				Interface::Vertex::View view;
-				file.read(&view.imageID, sizeof(uint32_t));
-				view.confidence = 0;
-				vertex.views.emplace_back(view);
+				uint32_t imageID;
+				file.read(&imageID, sizeof(uint32_t));
+				views.emplace_back(imageID);
 			}
-			std::sort(vertex.views.begin(), vertex.views.end(),
-				[](const Interface::Vertex::View& view0, const Interface::Vertex::View& view1) { return view0.imageID < view1.imageID; });
-			scene.vertices.emplace_back(std::move(vertex));
-			scene.verticesNormal.emplace_back(Interface::Normal{pointcloud.normals[i]});
-			scene.verticesColor.emplace_back(Interface::Color{pointcloud.colors[i]});
+			views.Sort();
 		}
 	}
 
@@ -956,7 +949,7 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 }
 
 
-bool ExportScene(const String& strFolder, const Interface& scene, bool binary = true)
+bool ExportScene(const String& strFolder, const Interface& scene, bool bForceSparsePointCloud = false, bool binary = true)
 {
 	Util::ensureFolder(strFolder+COLMAP_SPARSE_FOLDER);
 
@@ -992,7 +985,7 @@ bool ExportScene(const String& strFolder, const Interface& scene, bool binary = 
 				const Interface::Image* pImage(NULL);
 				for (uint32_t i=0; i<(uint32_t)scene.images.size(); ++i) {
 					const Interface::Image& image = scene.images[i];
-					if (image.platformID == ID && image.cameraID == 0 && image.poseID != MVS::NO_ID) {
+					if (image.platformID == ID && image.cameraID == 0 && image.poseID != NO_ID) {
 						pImage = &image;
 						break;
 					}
@@ -1043,7 +1036,7 @@ bool ExportScene(const String& strFolder, const Interface& scene, bool binary = 
 		cameras.resize((unsigned)scene.images.size());
 		for (uint32_t ID=0; ID<(uint32_t)scene.images.size(); ++ID) {
 			const Interface::Image& image = scene.images[ID];
-			if (image.poseID == MVS::NO_ID)
+			if (image.poseID == NO_ID)
 				continue;
 			const Interface::Platform& platform = scene.platforms[image.platformID];
 			const Interface::Platform::Pose& pose = platform.poses[image.poseID];
@@ -1068,7 +1061,7 @@ bool ExportScene(const String& strFolder, const Interface& scene, bool binary = 
 
 	// auto-select dense or sparse mode based on number of points
 	const bool bSparsePointCloud(scene.vertices.size() < (size_t)maxNumPointsSparse);
-	if (bSparsePointCloud) {
+	if (bSparsePointCloud || bForceSparsePointCloud) {
 		// write points list
 		{
 			const String filenamePoints(strFolder+(binary?COLMAP_POINTS_BIN:COLMAP_POINTS_TXT));
@@ -1154,7 +1147,8 @@ bool ExportScene(const String& strFolder, const Interface& scene, bool binary = 
 		Util::ensureFolder(strFolder+COLMAP_STEREO_CONSISTENCYGRAPHS_FOLDER);
 		Util::ensureFolder(strFolder+COLMAP_STEREO_DEPTHMAPS_FOLDER);
 		Util::ensureFolder(strFolder+COLMAP_STEREO_NORMALMAPS_FOLDER);
-	} else {
+	}
+	if (!bSparsePointCloud) {
 		// export dense point-cloud
 		const String filenameDensePoints(strFolder+COLMAP_DENSE_POINTS);
 		const String filenameDenseVisPoints(strFolder+COLMAP_DENSE_POINTS_VISIBILITY);
@@ -1181,7 +1175,7 @@ bool ExportScene(const String& strFolder, const Interface& scene, bool binary = 
 				file.write(&view.imageID, sizeof(uint32_t));
 			}
 		}
-		if (!pointcloud.Save(filenameDensePoints, true)) {
+		if (!pointcloud.Save(filenameDensePoints, false, true)) {
 			VERBOSE("error: unable to write file '%s'", filenameDensePoints.c_str());
 			return false;
 		}
@@ -1227,12 +1221,12 @@ bool ExportScene(const String& strFolder, const Interface& scene, bool binary = 
 bool ExportIntrinsicsTxt(const String& fileName, const Interface& scene)
 {
 	LOG_OUT() << "Writing intrinsics: " << fileName << std::endl;
-	uint32_t idxValidK(MVS::NO_ID);
+	uint32_t idxValidK(NO_ID);
 	for (uint32_t ID=0; ID<(uint32_t)scene.images.size(); ++ID) {
 		const Interface::Image& image = scene.images[ID];
 		if (!image.IsValid())
 			continue;
-		if (idxValidK == MVS::NO_ID) {
+		if (idxValidK == NO_ID) {
 			idxValidK = ID;
 			continue;
 		}
@@ -1241,7 +1235,7 @@ bool ExportIntrinsicsTxt(const String& fileName, const Interface& scene)
 			return false;
 		}
 	}
-	if (idxValidK == MVS::NO_ID)
+	if (idxValidK == NO_ID)
 		return false;
 	const Interface::Image& image = scene.images[idxValidK];
 	String imagefileName(image.name);
@@ -1292,7 +1286,7 @@ bool ExportImagesLog(const String& fileName, const Interface& scene)
 		const Interface::Image& image = scene.images[ID];
 		Eigen::Matrix3d R(Eigen::Matrix3d::Identity());
 		Eigen::Vector3d t(Eigen::Vector3d::Zero());
-		if (image.poseID != MVS::NO_ID) {
+		if (image.poseID != NO_ID) {
 			const Interface::Platform& platform = scene.platforms[image.platformID];
 			const Interface::Platform::Pose& pose = platform.poses[image.poseID];
 			R = Eigen::Map<const EMat33d>(pose.R.val).transpose();
@@ -1333,7 +1327,7 @@ bool ExportImagesCamera(const String& pathName, const Interface& scene)
 		RMatrix R(RMatrix::IDENTITY);
 		CMatrix t(CMatrix::ZERO);
 		unsigned width(0), height(0);
-		if (image.platformID != MVS::NO_ID && image.cameraID != MVS::NO_ID) {
+		if (image.platformID != NO_ID && image.cameraID != NO_ID) {
 			const Interface::Platform& platform = scene.platforms[image.platformID];
 			const Interface::Platform::Camera& camera = platform.cameras[image.cameraID];
 			if (camera.HasResolution()) {
@@ -1346,7 +1340,7 @@ bool ExportImagesCamera(const String& pathName, const Interface& scene)
 				height = pImage->GetHeight();
 				K = platform.GetFullK(image.cameraID, width, height);
 			}
-			if (image.poseID != MVS::NO_ID) {
+			if (image.poseID != NO_ID) {
 				const Interface::Platform::Pose& pose = platform.poses[image.poseID];
 				R = pose.R.t();
 				t = pose.C;
@@ -1384,23 +1378,6 @@ int main(int argc, LPCTSTR* argv)
 	TD_TIMER_START();
 
 	if (OPT::bFromOpenMVS) {
-		if (OPT::nMaxResolution > 0) {
-			// scale and save scene images
-			MVS::Scene scene(OPT::nMaxThreads);
-			if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
-				return EXIT_FAILURE;
-			const String folderName(Util::getFilePath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strInputFileName)) + String::FormatString("images%u" PATH_SEPARATOR_STR, OPT::nMaxResolution));
-			if (!scene.ScaleImages(OPT::nMaxResolution, 0, folderName)) {
-				DEBUG("error: can not scale scene images to '%s'", folderName.c_str());
-				return EXIT_FAILURE;
-			}
-			const String fileName(Util::insertBeforeFileExt(MAKE_PATH_SAFE(OPT::strInputFileName), _T("_new")));
-			if (!scene.Save(fileName, scene.mesh.IsEmpty() ? ARCHIVE_MVS : ARCHIVE_DEFAULT)) {
-				DEBUG("error: can not save scene to '%s'", fileName.c_str());
-				return EXIT_FAILURE;
-			}
-			return EXIT_SUCCESS;
-		}
 		// read MVS input data
 		Interface scene;
 		if (!ARCHIVE::SerializeLoad(scene, MAKE_PATH_SAFE(OPT::strInputFileName)))
@@ -1416,20 +1393,25 @@ int main(int argc, LPCTSTR* argv)
 		} else {
 			// write COLMAP input data
 			Util::ensureFolderSlash(OPT::strOutputFileName);
-			ExportScene(MAKE_PATH_SAFE(OPT::strOutputFileName), scene);
+			ExportScene(MAKE_PATH_SAFE(OPT::strOutputFileName), scene, OPT::bForceSparsePointCloud);
 		}
 		VERBOSE("Input data exported: %u images & %u vertices (%s)", scene.images.size(), scene.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	} else {
 		// read COLMAP input data
 		Interface scene;
 		const String strOutFolder(Util::getFilePath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputFileName)));
-		if (!ImportScene(MAKE_PATH_SAFE(OPT::strInputFileName), strOutFolder, scene))
+		PointCloud pointcloud;
+		if (!ImportScene(MAKE_PATH_SAFE(OPT::strInputFileName), strOutFolder, scene, pointcloud))
 			return EXIT_FAILURE;
 		// write MVS input data
 		Util::ensureFolder(strOutFolder);
 		if (!ARCHIVE::SerializeSave(scene, MAKE_PATH_SAFE(OPT::strOutputFileName)))
 			return EXIT_FAILURE;
-		VERBOSE("Exported data: %u images & %u vertices (%s)", scene.images.size(), scene.vertices.size(), TD_TIMER_GET_FMT().c_str());
+		if (!pointcloud.IsEmpty() && !pointcloud.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)) + _T(".ply"), true))
+			return EXIT_FAILURE;
+		VERBOSE("Exported data: %u images, %u points%s (%s)",
+			scene.images.size(), scene.vertices.size(), pointcloud.IsEmpty()?"":String::FormatString(", %d dense points", pointcloud.GetSize()).c_str(),
+			TD_TIMER_GET_FMT().c_str());
 	}
 
 	Finalize();
