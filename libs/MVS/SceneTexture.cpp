@@ -170,6 +170,12 @@ struct MeshTexture {
 				faceMap(pt) = validFace && (validFace = (mask(pt) != 0)) ? idxFace : NO_ID;
 			}
 		}
+		inline const int width() const {
+			return mask.width();
+		}
+		inline const int height() const {
+			return mask.height();
+		}
 	};
 
 	// used to represent a pixel color
@@ -2003,6 +2009,12 @@ void MeshTexture::LocalSeamLeveling()
 				inline void operator()(const ImageRef& pt) {
 					ASSERT(image.isInside(pt));
 					image(pt) = interior;
+				}
+				inline const int width() const {
+					return image.width();
+				}
+				inline const int height() const {
+					return image.height();
 				}
 			} data{mask};
 			for (const FIndex idxFace: texturePatch.faces) {
